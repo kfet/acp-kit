@@ -8,9 +8,11 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-22
+
 ### Added
 - Initial extraction of shared ACP relay primitives from `poe-acp` and `slack-acp`.
-- `client` — stdio ACP child process client (`Start`, sessions, prompts, caps, model selection, auth, fs callbacks).
+- `client` — stdio ACP child process client (`Start`, sessions, prompts, caps, model selection, auth, fs callbacks). Built-in permission policies: `AllowAllPermissions`, `ReadOnlyPermissions` (heuristic — rejects titles containing write/edit/bash/exec/run/delete/rm), `DenyAllPermissions`.
 - `client/auth` — auth method/result schema.
 - `state` — conversation-key → ACP-session manager with stable cwd allocation, best-effort resume, idle GC, and two-regime system-prompt fallback.
 - `attachments` — `os.Root`-sandboxed attachment store + ACP `ResourceLink` / embedded text `Resource` block builders.

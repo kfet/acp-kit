@@ -21,6 +21,29 @@ func AllowAllPermissions(_ context.Context, req acp.RequestPermissionRequest) ac
 	return pickPermission(req, "allow")
 }
 
+// DenyAllPermissions rejects a request by selecting a reject-shaped option,
+// falling back to the first option when no option advertises reject/deny.
+func DenyAllPermissions(_ context.Context, req acp.RequestPermissionRequest) acp.RequestPermissionResponse {
+	return pickPermission(req, "reject")
+}
+
+// ReadOnlyPermissions allows read-like tool calls and rejects everything else.
+// Heuristic: if the tool call title contains a write/exec-shaped verb
+// (write, edit, bash, exec, run, delete, rm), the request is rejected;
+// otherwise it is allowed.
+func ReadOnlyPermissions(_ context.Context, req acp.RequestPermissionRequest) acp.RequestPermissionResponse {
+	title := ""
+	if req.ToolCall.Title != nil {
+		title = strings.ToLower(*req.ToolCall.Title)
+	}
+	for _, w := range []string{"write", "edit", "bash", "exec", "run", "delete", "rm "} {
+		if strings.Contains(title, w) {
+			return pickPermission(req, "reject")
+		}
+	}
+	return pickPermission(req, "allow")
+}
+
 func pickPermission(req acp.RequestPermissionRequest, want string) acp.RequestPermissionResponse {
 	var chosen acp.PermissionOptionId
 	for _, o := range req.Options {
