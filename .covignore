@@ -1,0 +1,9 @@
+# Coverage exclusions for acp-kit. File-level patterns only; no line
+# numbers, no per-function regexes. See sibling .covignore in poe-acp /
+# slack-acp for rationale.
+
+# Per-package "must" helpers — files named *_must.go contain panic-only
+# helpers for branches the production caller cannot trigger (kernel-level
+# pipe allocation, post-success Close, etc.). Each helper carries a doc
+# comment justifying why it is unreachable.
+_must\.go:

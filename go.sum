@@ -1,0 +1,4 @@
+github.com/coder/acp-go-sdk v0.12.2 h1:fpRJ8Z5HMSr5cZ5IywzFlFZcIxZOsto+laNVu7XelFA=
+github.com/coder/acp-go-sdk v0.12.2/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
+github.com/kfet/covgate v0.1.0 h1:kGmKPQ4OFQ23nLRQYA/Uh5WsofB5L+wPcnCGbqcM5oo=
+github.com/kfet/covgate v0.1.0/go.mod h1:pSxam3ZYm9oT+N4XByBLxRJycbDSIpmk3+2jiPAwPa8=
