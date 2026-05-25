@@ -1,17 +1,17 @@
-// Package auth contains the small auth schema used by ACP authenticate extensions.
-package auth
+package client
 
-// Method describes one authentication method advertised by the agent in the
-// initialize response. Extra _meta fields the relay doesn't use are ignored.
-type Method struct {
+// AuthMethod describes one authentication method advertised by the agent in
+// the initialize response. Extra _meta fields the client doesn't use are
+// ignored.
+type AuthMethod struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Type        string `json:"type,omitempty"` // "agent" | "env_var" | "terminal" | ""
 }
 
-// Result is the outcome of an Authenticate call.
-type Result struct {
+// AuthResult is the outcome of an Authenticate call.
+type AuthResult struct {
 	// State is one of "needs_redirect", "ok", "cancelled", or "" if the
 	// agent's response carried no _meta.auth state field.
 	State string

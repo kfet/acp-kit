@@ -103,7 +103,7 @@ func (s Store) Write(cwd, msgID string, used map[string]struct{}, a Attachment, 
 		// hash-derived fallback so one hostile name cannot drop the attachment.
 		finalName = uniqueName(fallbackName(a), used)
 		f, err = root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		mustOpenFallback(err)
+		mustNot(err, "fallback OpenFile")
 	}
 	used[finalName] = struct{}{}
 
@@ -114,7 +114,7 @@ func (s Store) Write(cwd, msgID string, used map[string]struct{}, a Attachment, 
 		_ = root.Remove(finalName)
 		return File{}, copyErr
 	}
-	mustClose(closeErr)
+	mustNot(closeErr, "close")
 	if n > max {
 		_ = root.Remove(finalName)
 		return File{}, fmt.Errorf("attachment exceeds cap %d bytes", max)
@@ -175,14 +175,14 @@ func (s Store) openMessageDir(cwd, msgID string) (*os.Root, error) {
 		return nil, err
 	}
 	parent, err := os.OpenRoot(base)
-	mustOpenRoot(err)
+	mustNot(err, "OpenRoot")
 	if err := parent.Mkdir(msgID, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 		_ = parent.Close()
-		mustMkdirAt(err)
+		mustNot(err, "Mkdir within Root")
 	}
 	sub, err := parent.OpenRoot(msgID)
 	_ = parent.Close()
-	mustOpenRootAt(err)
+	mustNot(err, "OpenRoot within Root")
 	return sub, nil
 }
 

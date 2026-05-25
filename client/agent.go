@@ -7,14 +7,15 @@
 // concurrently — each NewSession/ResumeSession registers a per-session
 // sink that receives the stream of session/update notifications.
 //
-// We talk to acp.Connection directly (rather than acp.ClientSideConnection)
-// so we can issue the unstable session/list and session/resume methods that
-// the SDK doesn't model. The standard methods are sent via acp.SendRequest
-// with the SDK's typed request/response structs.
+// The client talks to acp.Connection directly (rather than
+// acp.ClientSideConnection) so it can issue the unstable session/list and
+// session/resume methods that the SDK doesn't model. Standard methods are
+// sent via acp.SendRequest with the SDK's typed request/response structs.
 //
 // Security: the fs methods (ReadTextFile / WriteTextFile) currently require
 // absolute paths but do not sandbox to the session cwd. That is adequate for
-// trusted-agent relay deployments; do not expose this client to untrusted agents.
+// trusted-agent relay deployments; do not expose this client to untrusted
+// agents.
 package client
 
 import (
@@ -149,9 +150,9 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 		cmd.Stderr = os.Stderr
 	}
 	stdin, err := cmd.StdinPipe()
-	mustPipe(err, "stdin")
+	mustNot(err, "stdin pipe")
 	stdout, err := cmd.StdoutPipe()
-	mustPipe(err, "stdout")
+	mustNot(err, "stdout pipe")
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agent: %w", err)
 	}
@@ -164,9 +165,8 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 }
 
 // connect performs the post-spawn ACP handshake and returns a wired
-// AgentProc. Exported (lower-case) only for tests that need to drive
-// the handshake against an in-process fake agent over io.Pipe pairs;
-// real callers go through Start.
+// AgentProc. Package-private; real callers go through Start. Tests use it to
+// drive the handshake against an in-process fake agent over io.Pipe pairs.
 func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) (*AgentProc, error) {
 	a := &AgentProc{
 		cfg:   cfg,
@@ -330,7 +330,7 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	a.mu.Unlock()
 
 	probeCwd, err := os.MkdirTemp("", "acp-kit-probe-*")
-	mustTempDir(err)
+	mustNot(err, "probe mkdir tmp")
 	defer os.RemoveAll(probeCwd)
 
 	// Use a noop sink — we don't care about updates.
