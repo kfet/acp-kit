@@ -8,6 +8,26 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-24
+
+### Added
+- `client.ReadOnlyPermissions` and `client.DenyAllPermissions` — built-in
+  policies promoted from `poe-acp`. (The published v0.1.0 tag was cut before
+  the implementation landed; v0.1.1 is the first tag that actually carries
+  this code.)
+
+### Changed
+- Internal cleanup: collapsed the per-call-site `must*` panic helpers in
+  `client` and `attachments` into a single `mustNot(err, label)` per
+  package. No public API impact.
+
+### Removed
+- `client/auth` sub-package. The `AuthMethod` and `AuthResult` types it
+  defined are now declared directly in the `client` package; the names
+  consumers used (`client.AuthMethod`, `client.AuthResult`) are unchanged.
+  Direct importers of `github.com/kfet/acp-kit/client/auth` would break,
+  but neither `poe-acp` nor `slack-acp` imported it.
+
 ## [0.1.0] - 2026-05-22
 
 ### Added
