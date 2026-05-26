@@ -1,5 +1,9 @@
 # acp-kit
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/kfet/acp-kit.svg)](https://pkg.go.dev/github.com/kfet/acp-kit)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kfet/acp-kit)](https://goreportcard.com/report/github.com/kfet/acp-kit)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Reusable Go packages for ACP-backed chat relays such as `poe-acp` and `slack-acp`.
 
 Module:
