@@ -68,6 +68,13 @@ type Caps struct {
 	// compaction. When false the consumer must fall back to inlining the
 	// same content on first prompt (and re-arm on resume).
 	SystemPrompt bool
+	// Extensions captures arbitrary entries from agentCapabilities._meta
+	// other than the kit-owned "session.systemPrompt". Consumers can
+	// probe for custom extension ids (e.g. "dev.poe-acp.status-line/v1")
+	// to discover advertised support. Values are the raw JSON bytes of
+	// the entry — typically `{}` or `{"version": N}`. nil when the
+	// agent advertised no _meta.
+	Extensions map[string]json.RawMessage
 }
 
 // SessionInfo is one entry from a session/list response.
@@ -108,6 +115,13 @@ type Config struct {
 	CloseGrace time.Duration
 	// Stderr is where the child's stderr is forwarded. If nil, os.Stderr.
 	Stderr io.Writer
+	// ClientMeta carries extra entries to merge into the outgoing
+	// clientCapabilities._meta map at Initialize. Use this to advertise
+	// support for custom ACP extensions (keyed by extension id, e.g.
+	// "dev.poe-acp.status-line/v1"). Keys collide last-wins with
+	// kit-owned entries (e.g. "session.systemPrompt"); pick distinct
+	// extension ids to avoid clobber.
+	ClientMeta map[string]any
 }
 
 // AgentProc wraps a single stdio-connected ACP agent process and the ACP
@@ -177,14 +191,18 @@ func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteClose
 
 	// Use a raw map for the response so we can read the unstable
 	// sessionCapabilities sub-object that the SDK's typed struct drops.
+	clientMeta := map[string]any{
+		"session.systemPrompt": map[string]any{"version": 1},
+	}
+	for k, v := range cfg.ClientMeta {
+		clientMeta[k] = v
+	}
 	initParams := acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs:       acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
 			Terminal: false,
-			Meta: map[string]any{
-				"session.systemPrompt": map[string]any{"version": 1},
-			},
+			Meta:     clientMeta,
 		},
 	}
 	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodInitialize, initParams)
@@ -225,12 +243,26 @@ func parseCaps(raw json.RawMessage) Caps {
 	}
 	_ = json.Unmarshal(raw, &env)
 	_, sysPrompt := env.AgentCapabilities.Meta["session.systemPrompt"]
+	var exts map[string]json.RawMessage
+	if len(env.AgentCapabilities.Meta) > 0 {
+		exts = make(map[string]json.RawMessage, len(env.AgentCapabilities.Meta))
+		for k, v := range env.AgentCapabilities.Meta {
+			if k == "session.systemPrompt" {
+				continue
+			}
+			exts[k] = v
+		}
+		if len(exts) == 0 {
+			exts = nil
+		}
+	}
 	return Caps{
 		LoadSession:     env.AgentCapabilities.LoadSession,
 		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
 		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 		SystemPrompt:    sysPrompt,
+		Extensions:      exts,
 	}
 }
 

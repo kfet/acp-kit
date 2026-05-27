@@ -8,6 +8,25 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-26
+
+### Added
+- `client.Config.ClientMeta` — extra entries merged into outgoing
+  `clientCapabilities._meta` at Initialize. Lets consumers advertise
+  support for custom ACP extensions (e.g.
+  `dev.poe-acp.status-line/v1`) without forking the handshake.
+- `client.Caps.Extensions` — parsed agent-side `_meta` entries from
+  `agentCapabilities._meta`, with the kit-owned `session.systemPrompt`
+  key filtered out (still surfaced via `Caps.SystemPrompt`). Lets
+  consumers probe for advertised extensions by key.
+
+### Changed
+- `client.Caps` is now uncomparable (contains a map field). Callers
+  using `== Caps{}` must switch to field-by-field checks. No effect
+  on struct-literal construction. `poe-acp` and `slack-acp` only
+  construct `Caps`; the only equality call site was the kit's own
+  `TestParseHelpersIgnoreGarbage`, updated in this release.
+
 ## [0.1.1] - 2026-05-24
 
 ### Added

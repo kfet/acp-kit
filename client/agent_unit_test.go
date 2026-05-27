@@ -417,7 +417,7 @@ func TestReadAndWriteTextFile(t *testing.T) {
 }
 
 func TestParseHelpersIgnoreGarbage(t *testing.T) {
-	if got := parseCaps(json.RawMessage("not-json")); got != (Caps{}) {
+	if got := parseCaps(json.RawMessage("not-json")); got.LoadSession || got.ListSessions || got.ResumeSession || got.EmbeddedContext || got.SystemPrompt || got.Extensions != nil {
 		t.Fatalf("parseCaps garbage = %#v", got)
 	}
 	if got := parseAuthMethods(json.RawMessage("not-json")); got != nil {
@@ -572,5 +572,69 @@ func TestDispatchReadWriteHappy(t *testing.T) {
 	wp2, _ := json.Marshal(acp.WriteTextFileRequest{Path: filepath.Join(parentFile, "sub", "x.txt")})
 	if _, e := a.dispatch(context.Background(), acp.ClientMethodFsWriteTextFile, wp2); e == nil {
 		t.Fatal("expected write err")
+	}
+}
+
+// TestClientMetaAndExtensions verifies that Config.ClientMeta is merged
+// into outgoing clientCapabilities._meta and that agentCapabilities._meta
+// entries other than session.systemPrompt land in Caps.Extensions.
+func TestClientMetaAndExtensions(t *testing.T) {
+	var gotInit json.RawMessage
+	handler := func(_ context.Context, method string, params json.RawMessage) (any, *acp.RequestError) {
+		if method == acp.AgentMethodInitialize {
+			gotInit = append(json.RawMessage(nil), params...)
+			return map[string]any{
+				"protocolVersion": acp.ProtocolVersionNumber,
+				"agentCapabilities": map[string]any{
+					"_meta": map[string]any{
+						"session.systemPrompt":           map[string]any{"version": 1},
+						"dev.poe-acp.status-line/v1":     map[string]any{"version": 1},
+						"dev.example.other/v2":           map[string]any{},
+					},
+				},
+				"authMethods": []map[string]any{},
+			}, nil
+		}
+		return nil, acp.NewMethodNotFound(method)
+	}
+	cfg := Config{
+		Command: []string{"x"},
+		Policy:  PermissionFunc(AllowAllPermissions),
+		ClientMeta: map[string]any{
+			"dev.poe-acp.status-line/v1": map[string]any{"version": 1},
+		},
+	}
+	pc := startPaired(t, cfg, handler)
+	_ = pc
+
+	// Verify outgoing _meta carries both kit-owned and ClientMeta entries.
+	var env struct {
+		ClientCapabilities struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"clientCapabilities"`
+	}
+	if err := json.Unmarshal(gotInit, &env); err != nil {
+		t.Fatalf("unmarshal init: %v", err)
+	}
+	if _, ok := env.ClientCapabilities.Meta["session.systemPrompt"]; !ok {
+		t.Fatal("kit-owned _meta entry missing")
+	}
+	if _, ok := env.ClientCapabilities.Meta["dev.poe-acp.status-line/v1"]; !ok {
+		t.Fatalf("ClientMeta not merged: %v", env.ClientCapabilities.Meta)
+	}
+
+	// Verify parsed Extensions has the non-kit entries, excludes session.systemPrompt.
+	caps := pc.agent.Caps()
+	if _, ok := caps.Extensions["dev.poe-acp.status-line/v1"]; !ok {
+		t.Fatalf("Extensions missing status-line: %#v", caps.Extensions)
+	}
+	if _, ok := caps.Extensions["dev.example.other/v2"]; !ok {
+		t.Fatalf("Extensions missing other: %#v", caps.Extensions)
+	}
+	if _, ok := caps.Extensions["session.systemPrompt"]; ok {
+		t.Fatal("Extensions must not include session.systemPrompt (surfaced via Caps.SystemPrompt)")
+	}
+	if !caps.SystemPrompt {
+		t.Fatal("SystemPrompt cap should still be detected")
 	}
 }
