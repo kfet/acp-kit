@@ -94,7 +94,15 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 		case "session/list":
 			return map[string]any{"sessions": []map[string]any{{"sessionId": "s-resume", "cwd": "/c"}}}, nil
 		case "session/resume":
-			return map[string]any{}, nil
+			return map[string]any{
+				"models": map[string]any{
+					"availableModels": []map[string]any{
+						{"modelId": "p/m1", "name": "Model 1"},
+						{"modelId": "p/m3", "name": "Model 3"},
+					},
+					"currentModelId": "p/m3",
+				},
+			}, nil
 		case acp.AgentMethodAuthenticate:
 			return map[string]any{"_meta": map[string]any{"auth": map[string]any{"state": "needs_redirect", "id": "pending-1", "url": "https://x/y", "instructions": "go here"}}}, nil
 		}
@@ -178,6 +186,11 @@ func TestPipeAndDispatch(t *testing.T) {
 	}
 	if err := a.ResumeSession(ctx, "/cwd", "s-resume", sink); err != nil {
 		t.Fatalf("ResumeSession: %v", err)
+	}
+	// ResumeSession must refresh the cached models.
+	models, cur = a.Models()
+	if len(models) != 2 || cur != "p/m3" {
+		t.Fatalf("after ResumeSession: models = %#v cur=%q", models, cur)
 	}
 
 	authRes, err := a.Authenticate(ctx, "oauth", "", "", false)
@@ -538,6 +551,49 @@ func TestListSessionsAndResumeErrorReturns(t *testing.T) {
 	}
 }
 
+func TestResumeSessionCachesModels(t *testing.T) {
+	handler := func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{
+				"protocolVersion": acp.ProtocolVersionNumber,
+				"agentCapabilities": map[string]any{
+					"sessionCapabilities": map[string]any{
+						"resume": map[string]any{},
+					},
+				},
+			}, nil
+		case "session/resume":
+			return map[string]any{
+				"models": map[string]any{
+					"availableModels": []map[string]any{
+						{"modelId": "x/a", "name": "Alpha"},
+					},
+					"currentModelId": "x/a",
+				},
+			}, nil
+		}
+		return nil, acp.NewMethodNotFound(method)
+	}
+	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, handler)
+	a := pc.agent
+
+	// Before resume, models must be empty.
+	models, cur := a.Models()
+	if len(models) != 0 || cur != "" {
+		t.Fatalf("before resume: models=%#v cur=%q", models, cur)
+	}
+
+	if err := a.ResumeSession(context.Background(), "/cwd", "s1", &recSink{}); err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+
+	models, cur = a.Models()
+	if len(models) != 1 || models[0].ID != "x/a" || models[0].Name != "Alpha" || cur != "x/a" {
+		t.Fatalf("after resume: models=%#v cur=%q", models, cur)
+	}
+}
+
 func TestDispatchReadWriteHappy(t *testing.T) {
 	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, happyAgent(t))
 	a := pc.agent
@@ -587,9 +643,9 @@ func TestClientMetaAndExtensions(t *testing.T) {
 				"protocolVersion": acp.ProtocolVersionNumber,
 				"agentCapabilities": map[string]any{
 					"_meta": map[string]any{
-						"session.systemPrompt":           map[string]any{"version": 1},
-						"dev.poe-acp.status-line/v1":     map[string]any{"version": 1},
-						"dev.example.other/v2":           map[string]any{},
+						"session.systemPrompt":       map[string]any{"version": 1},
+						"dev.poe-acp.status-line/v1": map[string]any{"version": 1},
+						"dev.example.other/v2":       map[string]any{},
 					},
 				},
 				"authMethods": []map[string]any{},

@@ -396,7 +396,7 @@ func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo
 // for the resumed session. Caller must check Caps().ResumeSession first.
 // The given sid is the agent-returned identifier (as listed by ListSessions).
 func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink) error {
-	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/resume", resumeSessionRequest{
+	resp, err := acp.SendRequest[acp.ResumeSessionResponse](a.conn, ctx, "session/resume", resumeSessionRequest{
 		SessionId:  string(sid),
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
@@ -406,6 +406,9 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	}
 	a.mu.Lock()
 	a.sinks[sid] = sink
+	if resp.Models != nil {
+		a.models = resp.Models
+	}
 	a.mu.Unlock()
 	return nil
 }

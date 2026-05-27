@@ -8,6 +8,15 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-27
+
+### Fixed
+- `client.AgentProc.ResumeSession` now decodes the response into
+  `acp.ResumeSessionResponse` (was `json.RawMessage`) and caches
+  `resp.Models` into the agent's model state under the lock,
+  mirroring `NewSession`. Previously, `Models()` returned empty data
+  on resumed sessions even though the agent sent a full model list.
+
 ## [0.1.2] - 2026-05-26
 
 ### Added
