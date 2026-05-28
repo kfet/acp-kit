@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-27
+
 ### Added
 
 - `statusline` package — wire contract for the `dev.acp-kit.status-line/v1` ACP extension. Exports `ExtensionID`, `MaxFieldRunes`, `Status`, `ProviderEmoji` / `ProviderEmojiForModel`, `ParseMeta`, `Segments`, and `CapRunes`. Relay-specific renderers (markdown vs Slack mrkdwn, animated vs static) stay in each consumer; this is just the shared core. Replaces the duplicated `internal/statusline` packages in poe-acp and slack-acp; both should now import `github.com/kfet/acp-kit/statusline` and keep only their local Header/Spinner.
