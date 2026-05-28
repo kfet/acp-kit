@@ -644,7 +644,7 @@ func TestClientMetaAndExtensions(t *testing.T) {
 				"agentCapabilities": map[string]any{
 					"_meta": map[string]any{
 						"session.systemPrompt":       map[string]any{"version": 1},
-						"dev.poe-acp.status-line/v1": map[string]any{"version": 1},
+						"dev.acp-kit.status-line/v1": map[string]any{"version": 1},
 						"dev.example.other/v2":       map[string]any{},
 					},
 				},
@@ -657,7 +657,7 @@ func TestClientMetaAndExtensions(t *testing.T) {
 		Command: []string{"x"},
 		Policy:  PermissionFunc(AllowAllPermissions),
 		ClientMeta: map[string]any{
-			"dev.poe-acp.status-line/v1": map[string]any{"version": 1},
+			"dev.acp-kit.status-line/v1": map[string]any{"version": 1},
 		},
 	}
 	pc := startPaired(t, cfg, handler)
@@ -675,13 +675,13 @@ func TestClientMetaAndExtensions(t *testing.T) {
 	if _, ok := env.ClientCapabilities.Meta["session.systemPrompt"]; !ok {
 		t.Fatal("kit-owned _meta entry missing")
 	}
-	if _, ok := env.ClientCapabilities.Meta["dev.poe-acp.status-line/v1"]; !ok {
+	if _, ok := env.ClientCapabilities.Meta["dev.acp-kit.status-line/v1"]; !ok {
 		t.Fatalf("ClientMeta not merged: %v", env.ClientCapabilities.Meta)
 	}
 
 	// Verify parsed Extensions has the non-kit entries, excludes session.systemPrompt.
 	caps := pc.agent.Caps()
-	if _, ok := caps.Extensions["dev.poe-acp.status-line/v1"]; !ok {
+	if _, ok := caps.Extensions["dev.acp-kit.status-line/v1"]; !ok {
 		t.Fatalf("Extensions missing status-line: %#v", caps.Extensions)
 	}
 	if _, ok := caps.Extensions["dev.example.other/v2"]; !ok {

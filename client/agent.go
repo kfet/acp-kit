@@ -70,7 +70,7 @@ type Caps struct {
 	SystemPrompt bool
 	// Extensions captures arbitrary entries from agentCapabilities._meta
 	// other than the kit-owned "session.systemPrompt". Consumers can
-	// probe for custom extension ids (e.g. "dev.poe-acp.status-line/v1")
+	// probe for custom extension ids (e.g. "dev.acp-kit.status-line/v1")
 	// to discover advertised support. Values are the raw JSON bytes of
 	// the entry — typically `{}` or `{"version": N}`. nil when the
 	// agent advertised no _meta.
@@ -118,7 +118,7 @@ type Config struct {
 	// ClientMeta carries extra entries to merge into the outgoing
 	// clientCapabilities._meta map at Initialize. Use this to advertise
 	// support for custom ACP extensions (keyed by extension id, e.g.
-	// "dev.poe-acp.status-line/v1"). Keys collide last-wins with
+	// "dev.acp-kit.status-line/v1"). Keys collide last-wins with
 	// kit-owned entries (e.g. "session.systemPrompt"); pick distinct
 	// extension ids to avoid clobber.
 	ClientMeta map[string]any
