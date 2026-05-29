@@ -8,6 +8,19 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-28
+
+### Added
+
+- `terminal` package — agent-side ACP terminal driver. Exports a narrow `Conn`
+  interface (the terminal subset of the agent-side connection), a `State` that
+  tracks one session's foreground and background terminals (safe for concurrent
+  use), and operations `Exec` (foreground with optional timeout), `StartBackground`
+  / `BackgroundOutput` / `KillBackground`, and `CleanupPending` / `CleanupBackground`.
+  Foreground timeouts surface as `*TimeoutError` and context cancellation as
+  `ErrAborted`. Extracted from fir's ACP mode so any ACP agent can delegate shell
+  execution to a terminal-capable client. 100% covered.
+
 ## [0.1.4] - 2026-05-27
 
 ### Added

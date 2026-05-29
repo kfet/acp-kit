@@ -23,6 +23,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `attachments` — cwd-local attachment sandbox plus ACP `ResourceLink` / embedded text resource blocks.
 - `skills` — load embedded/host fir-style skills and format `<available_skills>` catalogs.
 - `statusline` — wire contract for the `dev.acp-kit.status-line/v1` ACP extension: mood/plan header payload that agents emit on `session/update._meta` so relays can render a compact status line.
+- `terminal` — agent-side ACP terminal driver: foreground exec with timeout, a bounded pool of background commands, and leak cleanup, over a narrow `Conn` interface.
 - `sysprompt` — compose base relay prompt, operator extra text, and skill catalogs.
 - `paths` — XDG state/config path helpers.
 - `log` — opt-in debug logging.
