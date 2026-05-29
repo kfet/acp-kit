@@ -97,6 +97,20 @@ func NewStateWithLimit(limit int) *State {
 	}
 }
 
+// TakePending reports whether toolCallID has a still-pending foreground or
+// background terminal and, if so, removes the entry. Agents use this on a
+// tool-end event to decide whether the tool's output was already rendered by
+// the client's terminal (so the agent can skip emitting duplicate text).
+func (s *State) TakePending(toolCallID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.pendingBash[toolCallID]; ok {
+		delete(s.pendingBash, toolCallID)
+		return true
+	}
+	return false
+}
+
 // embedInToolCall sends a tool_call update that embeds a terminal in the tool
 // call UI. Delivery failures are non-fatal and ignored.
 func embedInToolCall(conn Conn, sessionID, toolCallID, terminalID string) {

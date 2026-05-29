@@ -88,6 +88,22 @@ func TestTimeoutError(t *testing.T) {
 	}
 }
 
+func TestTakePending(t *testing.T) {
+	s := NewState()
+	if s.TakePending("missing") {
+		t.Error("TakePending on empty state should be false")
+	}
+	s.mu.Lock()
+	s.pendingBash["tc"] = "term"
+	s.mu.Unlock()
+	if !s.TakePending("tc") {
+		t.Error("TakePending should report a present entry")
+	}
+	if s.TakePending("tc") {
+		t.Error("TakePending should have removed the entry")
+	}
+}
+
 func TestExec_CreateTerminalError(t *testing.T) {
 	conn := &fakeConn{createFn: func(acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
 		return acp.CreateTerminalResponse{}, errors.New("boom")

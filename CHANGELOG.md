@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-28
+
+### Added
+
+- `terminal.State.TakePending(toolCallID)` — atomic check-and-remove of a pending terminal, so agents can tell on a tool-end event whether the client terminal already rendered the output and skip emitting duplicate text.
+
 ## [0.2.0] - 2026-05-28
 
 ### Added
