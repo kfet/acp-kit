@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-02
+
+### Added
+
+- `AgentProc.AvailableCommands() []CommandInfo` — snapshot of the agent's advertised slash-command catalog, captured from `availableCommandsUpdate` session notifications as they arrive (consistent with how `Models`/`Caps`/`AuthMethods` are snapshotted). Lets a relay enumerate and validate agent commands (e.g. to expose `/reload` as a chat command) without re-implementing the notification plumbing. New `CommandInfo{Name, Description}` type.
+
 ## [0.2.1] - 2026-05-28
 
 ### Added

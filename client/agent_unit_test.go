@@ -694,3 +694,43 @@ func TestClientMetaAndExtensions(t *testing.T) {
 		t.Fatal("SystemPrompt cap should still be detected")
 	}
 }
+
+func TestAvailableCommandsSnapshot(t *testing.T) {
+	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, happyAgent(t))
+	a := pc.agent
+
+	if cmds := a.AvailableCommands(); len(cmds) != 0 {
+		t.Fatalf("expected empty before any update, got %v", cmds)
+	}
+
+	upd, _ := json.Marshal(acp.SessionNotification{
+		SessionId: "sid-x",
+		Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+			AvailableCommands: []acp.AvailableCommand{
+				{Name: "reload", Description: "Reload extensions"},
+				{Name: "compact", Description: "Compact history"},
+			},
+		}},
+	})
+	if _, e := a.dispatch(context.Background(), acp.ClientMethodSessionUpdate, upd); e != nil {
+		t.Fatalf("dispatch availableCommands: %v", e)
+	}
+	got := a.AvailableCommands()
+	if len(got) != 2 || got[0].Name != "reload" || got[1].Name != "compact" || got[0].Description != "Reload extensions" {
+		t.Fatalf("snapshot wrong: %+v", got)
+	}
+
+	// A later update replaces the snapshot.
+	upd2, _ := json.Marshal(acp.SessionNotification{
+		SessionId: "sid-x",
+		Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+			AvailableCommands: []acp.AvailableCommand{{Name: "only"}},
+		}},
+	})
+	if _, e := a.dispatch(context.Background(), acp.ClientMethodSessionUpdate, upd2); e != nil {
+		t.Fatalf("dispatch 2: %v", e)
+	}
+	if got := a.AvailableCommands(); len(got) != 1 || got[0].Name != "only" {
+		t.Fatalf("snapshot not replaced: %+v", got)
+	}
+}

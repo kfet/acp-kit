@@ -138,6 +138,11 @@ type AgentProc struct {
 	models *acp.SessionModelState              // cached model list (nil until first NewSession or Probe)
 
 	authMethods []AuthMethod // parsed from initialize response
+
+	// availableCommands is the latest agent-advertised command catalog,
+	// snapshotted from session/update notifications. Nil until the agent
+	// sends an availableCommandsUpdate.
+	availableCommands []CommandInfo
 }
 
 // Start launches the agent process, performs Initialize (capturing caps),
@@ -332,6 +337,24 @@ func (a *AgentProc) SetConfigOption(ctx context.Context, sid acp.SessionId, conf
 type ModelInfo struct {
 	ID   string // "provider/modelID"
 	Name string // human-readable label
+}
+
+// CommandInfo is one agent-advertised command (from an
+// availableCommandsUpdate session notification).
+type CommandInfo struct {
+	Name        string // command name, e.g. "reload" (invoked as "/reload")
+	Description string
+}
+
+// AvailableCommands returns a snapshot of the agent's last-advertised
+// command catalog. Empty until the agent sends an availableCommandsUpdate.
+// Safe for concurrent use.
+func (a *AgentProc) AvailableCommands() []CommandInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]CommandInfo, len(a.availableCommands))
+	copy(out, a.availableCommands)
+	return out
 }
 
 // Models returns a snapshot of the agent's last-seen available models.
@@ -599,6 +622,19 @@ func (a *AgentProc) sinkFor(sid acp.SessionId) SessionUpdateSink {
 
 // sessionUpdate fans out to the per-session sink.
 func (a *AgentProc) sessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	// Snapshot the agent's advertised command catalog as it arrives, so
+	// AvailableCommands() reflects the latest update regardless of which
+	// session carried it. (Commands are a process-global concern in fir
+	// and similar agents.)
+	if u := params.Update.AvailableCommandsUpdate; u != nil {
+		cmds := make([]CommandInfo, 0, len(u.AvailableCommands))
+		for _, c := range u.AvailableCommands {
+			cmds = append(cmds, CommandInfo{Name: c.Name, Description: c.Description})
+		}
+		a.mu.Lock()
+		a.availableCommands = cmds
+		a.mu.Unlock()
+	}
 	if s := a.sinkFor(params.SessionId); s != nil {
 		return s.OnUpdate(ctx, params)
 	}
