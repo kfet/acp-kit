@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -90,6 +91,8 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 		case acp.AgentMethodSessionSetModel:
 			return map[string]any{}, nil
 		case "session/set_config_option":
+			return map[string]any{}, nil
+		case "session/release":
 			return map[string]any{}, nil
 		case "session/list":
 			return map[string]any{"sessions": []map[string]any{{"sessionId": "s-resume", "cwd": "/c"}}}, nil
@@ -178,6 +181,9 @@ func TestPipeAndDispatch(t *testing.T) {
 	}
 	if err := a.Cancel(ctx, sid); err != nil {
 		t.Fatalf("Cancel: %v", err)
+	}
+	if err := a.ReleaseSession(ctx, sid); err != nil {
+		t.Fatalf("ReleaseSession: %v", err)
 	}
 
 	infos, err := a.ListSessions(ctx, "/cwd")
@@ -273,6 +279,46 @@ func TestPromptError(t *testing.T) {
 	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, failing)
 	if _, err := pc.agent.Prompt(context.Background(), "sid", nil); err == nil {
 		t.Fatal("expected Prompt error")
+	}
+}
+
+func TestReleaseSessionNotFound(t *testing.T) {
+	failing := func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{"protocolVersion": acp.ProtocolVersionNumber, "agentCapabilities": map[string]any{}}, nil
+		case "session/release":
+			return nil, &acp.RequestError{Code: SessionNotFoundCode, Message: "Session not found"}
+		}
+		return nil, acp.NewMethodNotFound(method)
+	}
+	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, failing)
+	err := pc.agent.ReleaseSession(context.Background(), "ghost")
+	if err == nil {
+		t.Fatal("expected ReleaseSession error for unknown session")
+	}
+	if !IsSessionNotFound(err) {
+		t.Fatalf("IsSessionNotFound(%v) = false, want true", err)
+	}
+}
+
+func TestIsSessionNotFound(t *testing.T) {
+	if IsSessionNotFound(nil) {
+		t.Error("nil should not be session-not-found")
+	}
+	if IsSessionNotFound(errors.New("boom")) {
+		t.Error("plain error should not be session-not-found")
+	}
+	if IsSessionNotFound(acp.NewInternalError(map[string]any{"error": "x"})) {
+		t.Error("internal error (wrong code) should not be session-not-found")
+	}
+	if !IsSessionNotFound(&acp.RequestError{Code: SessionNotFoundCode}) {
+		t.Error("RequestError with SessionNotFoundCode should match")
+	}
+	// Wrapped error should still be detected via errors.As.
+	wrapped := fmt.Errorf("prompt failed: %w", &acp.RequestError{Code: SessionNotFoundCode})
+	if !IsSessionNotFound(wrapped) {
+		t.Error("wrapped RequestError should match")
 	}
 }
 

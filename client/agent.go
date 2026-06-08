@@ -21,6 +21,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -331,6 +332,42 @@ func (a *AgentProc) SetConfigOption(ctx context.Context, sid acp.SessionId, conf
 		Value:     value,
 	})
 	return err
+}
+
+// SessionNotFoundCode is the stable JSON-RPC error code an ACP agent returns
+// when a request references a session it no longer holds in memory (released
+// or idle-reaped). It is the shared contract between the agent (fir) and
+// relays: on this code a relay can drop its cached session and re-create it.
+const SessionNotFoundCode = -32001
+
+// releaseSessionRequest is the params for the session/release RPC.
+type releaseSessionRequest struct {
+	SessionId acp.SessionId `json:"sessionId"`
+}
+
+// ReleaseSession asks the agent to tear down and forget an in-memory session,
+// freeing its extension/MCP subprocesses. The on-disk session is left intact.
+// Returns a *acp.RequestError with code SessionNotFoundCode if the agent does
+// not hold the session (see IsSessionNotFound).
+func (a *AgentProc) ReleaseSession(ctx context.Context, sid acp.SessionId) error {
+	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/release", releaseSessionRequest{
+		SessionId: sid,
+	})
+	return err
+}
+
+// IsSessionNotFound reports whether err is the typed ACP session-not-found
+// error (JSON-RPC code SessionNotFoundCode). Relays use it to distinguish a
+// recoverable "agent forgot this session" condition from other failures.
+func IsSessionNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *acp.RequestError
+	if errors.As(err, &re) {
+		return re.Code == SessionNotFoundCode
+	}
+	return false
 }
 
 // ModelInfo is one entry in the agent's available-models list.

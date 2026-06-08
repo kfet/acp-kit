@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-07
+
+### Added
+
+- `AgentProc.ReleaseSession(ctx, sid)` — issues the `session/release` ACP RPC so a relay can explicitly tear down an in-memory agent session (freeing its extension/MCP subprocesses) without killing the whole agent process. Plus `SessionNotFoundCode` (-32001, the shared agent/relay contract code) and `IsSessionNotFound(err)` helper so relays can detect a released/reaped session — returned by the agent from prompt/release/etc. on an unknown session — and transparently re-create it.
+
 ## [0.2.2] - 2026-06-02
 
 ### Added
