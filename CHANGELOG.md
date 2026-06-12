@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-12
+
+### Added
+
+- Generic *refuse-LLM-output* construct in `client`: `ValidatingSink`, `PromptValidated`, `Validator`/`ValidatorFunc`, `RefuseConfig`, `RefuseResult`. A transport-agnostic way for an ACP client to validate an agent's complete visible message and, on refusal, re-prompt the agent with a short reason to regenerate — before the user ever sees it. `ValidatingSink` buffers `AgentMessageChunk` updates (thoughts/tool-calls/plans still stream live) so rejected output is never delivered; `PromptValidated` runs the refuse/regenerate loop with a `MaxRefusals` cap and an optional deterministic `Fallback` transform so a turn can never wedge against a stubborn model.
+
 ## [0.2.3] - 2026-06-07
 
 ### Added
