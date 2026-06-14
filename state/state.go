@@ -3,7 +3,9 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +47,12 @@ type Config struct {
 	// it is called for each new/resumed session and overrides SystemPrompt.
 	SystemPrompt         string
 	SystemPromptProvider func() string
+
+	// SystemPromptForKey, if set, resolves the durable system prompt per
+	// conversation key. It takes precedence over SystemPromptProvider and
+	// SystemPrompt and is evaluated at session creation/resume. Use it for
+	// per-conversation persona (e.g. a different prompt per Slack channel).
+	SystemPromptForKey func(key string) string
 }
 
 // Session holds manager-side state for one ACP session.
@@ -128,7 +136,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, key string, sink client.Sessi
 		return nil, err
 	}
 
-	sys := m.systemPrompt()
+	sys := m.systemPrompt(key)
 	sid, resumed := m.tryResume(ctx, cwd, sink)
 	caps := m.cfg.Agent.Caps()
 	pendingInline := false
@@ -231,6 +239,73 @@ func (m *Manager) Len() int {
 	return len(m.byKey)
 }
 
+// checkpointFile is the per-conversation checkpoint filename stored under the
+// conversation's cwd.
+const checkpointFile = ".checkpoint"
+
+// Known reports whether a session for key already exists — either live in
+// memory or as a persisted cwd on disk. Disk is the source of truth across
+// restarts: the in-memory map is empty after a restart, but cwd dirs survive,
+// so a relay that only follows conversations it has been engaged in can use
+// Known as a restart-stable membership check.
+//
+// The disk check uses the default cwd layout (<StateDir>/convs/<key>). When a
+// custom CwdFor is configured, Known consults only the in-memory map, since the
+// custom layout's existence semantics are the caller's to define.
+func (m *Manager) Known(key string) bool {
+	m.mu.Lock()
+	_, ok := m.byKey[key]
+	root := m.root
+	m.mu.Unlock()
+	if ok {
+		return true
+	}
+	if m.cfg.CwdFor != nil || root == nil {
+		return false
+	}
+	if validateKeyComponent(key) != nil {
+		return false
+	}
+	fi, err := root.Stat(filepath.Join("convs", key))
+	return err == nil && fi.IsDir()
+}
+
+// Checkpoint returns the opaque checkpoint string persisted for key, or "" if
+// none has been set. The Manager stores and returns it verbatim; the relay owns
+// its meaning (e.g. a last-processed external event id). Allocates the cwd if
+// absent.
+func (m *Manager) Checkpoint(key string) (string, error) {
+	cwd, err := m.cwdFor(key)
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(filepath.Join(cwd, checkpointFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read checkpoint: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// SetCheckpoint persists value as the opaque checkpoint for key under its cwd,
+// atomically (write-temp + rename). Allocates the cwd if absent.
+func (m *Manager) SetCheckpoint(key, value string) error {
+	cwd, err := m.cwdFor(key)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(cwd, checkpointFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(value), 0o644); err != nil {
+		return fmt.Errorf("write checkpoint: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(cwd, checkpointFile)); err != nil {
+		return fmt.Errorf("commit checkpoint: %w", err)
+	}
+	return nil
+}
+
 // TakePendingSystemPrompt returns inline fallback text for the next user prompt
 // and clears the pending flag. Call with s.Mu held.
 func (m *Manager) TakePendingSystemPrompt(s *Session) string {
@@ -241,7 +316,10 @@ func (m *Manager) TakePendingSystemPrompt(s *Session) string {
 	return s.systemPrompt
 }
 
-func (m *Manager) systemPrompt() string {
+func (m *Manager) systemPrompt(key string) string {
+	if m.cfg.SystemPromptForKey != nil {
+		return strings.TrimSpace(m.cfg.SystemPromptForKey(key))
+	}
 	if m.cfg.SystemPromptProvider != nil {
 		return strings.TrimSpace(m.cfg.SystemPromptProvider())
 	}
