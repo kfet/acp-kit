@@ -108,6 +108,13 @@ type Config struct {
 	Command []string
 	// Cwd is the working directory for the child process.
 	Cwd string
+	// MCPServersForSession, when set, returns the MCP servers to include
+	// in session/new and session/resume for a session at the given cwd.
+	// This lets a client hand the agent client-hosted MCP servers (e.g. a
+	// per-session stdio tool server) without changing the NewSession
+	// signature. Nil (the default) means no MCP servers — identical to the
+	// previous hardcoded empty list.
+	MCPServersForSession func(cwd string) []acp.McpServer
 	// Env is the environment for the child. If nil, os.Environ() is used.
 	Env []string
 	// Policy decides permission responses. If nil, AllowAllPermissions is used.
@@ -144,6 +151,18 @@ type AgentProc struct {
 	// snapshotted from session/update notifications. Nil until the agent
 	// sends an availableCommandsUpdate.
 	availableCommands []CommandInfo
+}
+
+// mcpFor returns the configured MCP servers for a session cwd, or an
+// empty (non-nil) slice when no hook is set.
+func (c Config) mcpFor(cwd string) []acp.McpServer {
+	if c.MCPServersForSession == nil {
+		return []acp.McpServer{}
+	}
+	if s := c.MCPServersForSession(cwd); s != nil {
+		return s
+	}
+	return []acp.McpServer{}
 }
 
 // Start launches the agent process, performs Initialize (capturing caps),
@@ -286,7 +305,7 @@ func (a *AgentProc) Caps() Caps { return a.caps }
 func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	req := acp.NewSessionRequest{
 		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
+		McpServers: a.cfg.mcpFor(cwd),
 	}
 	if systemPromptBlocks != nil {
 		req.Meta = map[string]any{
@@ -459,7 +478,7 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	resp, err := acp.SendRequest[acp.ResumeSessionResponse](a.conn, ctx, "session/resume", resumeSessionRequest{
 		SessionId:  string(sid),
 		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
+		McpServers: a.cfg.mcpFor(cwd),
 	})
 	if err != nil {
 		return err
