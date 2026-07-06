@@ -8,6 +8,18 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- New `mcphost` package: a generic, self-hosted MCP server that a consumer
+  advertises to an ACP agent as a stdio MCP server. It owns a per-process
+  unix socket (private 0700 dir, 0600 sock, stale cleanup), a token →
+  session-key registry (server-side, unspoofable), the MCP JSON-RPC loop,
+  and dispatch to consumer-registered tools via `Host.Tool`. Includes the
+  dumb redirector entrypoint (`RunRedir` / `MaybeRunRedir`) with a preamble
+  framing identical to poe-acp's original `mcpattach`. Zero consumer-specific
+  logic; tool names/schemas/behaviour are supplied by the consumer. Extracted
+  from poe-acp for reuse across relays.
+
 ## [0.2.6] - 2026-06-14
 
 ### Added
