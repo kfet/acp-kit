@@ -8,8 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
 ### Added
 
+- Add `mcphost`: generic session-scoped MCP-over-unix-socket host with
+  per-session token auth (extracted from poe-acp).
 - New `mcphost` package: a generic, self-hosted MCP server that a consumer
   advertises to an ACP agent as a stdio MCP server. It owns a per-process
   unix socket (private 0700 dir, 0600 sock, stale cleanup), a token →
