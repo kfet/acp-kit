@@ -8,6 +8,21 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `github.com/coder/acp-go-sdk` v0.12.2 → v0.13.5 and
+  `github.com/kfet/covgate` v0.1.0 → v0.1.2.
+- Model handling now speaks both generations of the ACP wire protocol. The
+  SDK's v0.13 release removed the unstable per-session model API
+  (`SessionModelState`, `session/set_model`) in favour of generic session
+  config options. `client` prefers the new style — the `session/new` /
+  `session/resume` `configOptions` entry whose category is `"model"`, set
+  via `session/set_config_option` — and falls back to the old `"models"`
+  object plus the `session/set_model` RPC for older agents (e.g. `fir`
+  pinned to acp-go-sdk v0.6.3). The public API (`client.ModelInfo`,
+  `AgentProc.Models`, `AgentProc.SetModel`, `AgentProc.ProbeModels`) is
+  unchanged.
+
 ## [0.3.0] - 2026-07-06
 
 ### Added

@@ -143,7 +143,7 @@ type AgentProc struct {
 
 	mu     sync.Mutex
 	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
-	models *acp.SessionModelState              // cached model list (nil until first NewSession or Probe)
+	models *modelState                         // cached model list (nil until first NewSession or Probe)
 
 	authMethods []AuthMethod // parsed from initialize response
 
@@ -314,38 +314,53 @@ func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpda
 			},
 		}
 	}
-	resp, err := acp.SendRequest[acp.NewSessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
+	resp, err := acp.SendRequest[sessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
 	if err != nil {
 		return "", err
 	}
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
-	if resp.Models != nil {
-		a.models = resp.Models
+	if ms := resp.modelState(); ms != nil {
+		a.models = ms
 	}
 	a.mu.Unlock()
 	return resp.SessionId, nil
 }
 
-// SetModel calls the unstable session/set_model RPC.
+// SetModel selects the session's model. New-style agents (ACP >= 0.13) are
+// driven through session/set_config_option using the id of the "model"
+// config option; older agents through the session/set_model RPC.
 func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID string) error {
-	_, err := acp.SendRequest[acp.UnstableSetSessionModelResponse](a.conn, ctx, acp.AgentMethodSessionSetModel, acp.UnstableSetSessionModelRequest{
+	a.mu.Lock()
+	configID := ""
+	if a.models != nil {
+		configID = a.models.configID
+	}
+	a.mu.Unlock()
+	if configID != "" {
+		return a.SetConfigOption(ctx, sid, configID, modelID)
+	}
+	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, agentMethodSessionSetModel, setSessionModelRequest{
 		SessionId: sid,
-		ModelId:   acp.UnstableModelId(modelID),
+		ModelId:   modelID,
 	})
 	return err
 }
 
-// SetConfigOption calls the (fir-specific) session/set_config_option RPC.
-// Used for thinking_level and similar dropdown-style knobs.
+// setSessionConfigOptionRequest is the params for session/set_config_option.
+// It is wire-identical to the SDK's SetSessionConfigOptionValueId variant,
+// and is what older (pre-0.13) agents such as fir already accept.
 type setSessionConfigOptionRequest struct {
 	SessionId acp.SessionId `json:"sessionId"`
 	ConfigId  string        `json:"configId"`
 	Value     string        `json:"value"`
 }
 
+// SetConfigOption calls the session/set_config_option RPC. Used for the
+// model selector on new-style agents, and for thinking_level and similar
+// dropdown-style knobs.
 func (a *AgentProc) SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error {
-	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/set_config_option", setSessionConfigOptionRequest{
+	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodSessionSetConfigOption, setSessionConfigOptionRequest{
 		SessionId: sid,
 		ConfigId:  configID,
 		Value:     value,
@@ -421,11 +436,9 @@ func (a *AgentProc) Models() (models []ModelInfo, currentID string) {
 	if a.models == nil {
 		return nil, ""
 	}
-	out := make([]ModelInfo, 0, len(a.models.AvailableModels))
-	for _, m := range a.models.AvailableModels {
-		out = append(out, ModelInfo{ID: string(m.ModelId), Name: string(m.Name)})
-	}
-	return out, string(a.models.CurrentModelId)
+	out := make([]ModelInfo, len(a.models.models))
+	copy(out, a.models.models)
+	return out, a.models.current
 }
 
 // ProbeModels creates a throwaway session in the agent's cwd to read its
@@ -475,7 +488,7 @@ func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo
 // for the resumed session. Caller must check Caps().ResumeSession first.
 // The given sid is the agent-returned identifier (as listed by ListSessions).
 func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink) error {
-	resp, err := acp.SendRequest[acp.ResumeSessionResponse](a.conn, ctx, "session/resume", resumeSessionRequest{
+	resp, err := acp.SendRequest[sessionResponse](a.conn, ctx, "session/resume", resumeSessionRequest{
 		SessionId:  string(sid),
 		Cwd:        cwd,
 		McpServers: a.cfg.mcpFor(cwd),
@@ -485,8 +498,8 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	}
 	a.mu.Lock()
 	a.sinks[sid] = sink
-	if resp.Models != nil {
-		a.models = resp.Models
+	if ms := resp.modelState(); ms != nil {
+		a.models = ms
 	}
 	a.mu.Unlock()
 	return nil

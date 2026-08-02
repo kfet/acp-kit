@@ -88,7 +88,7 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 			}, nil
 		case acp.AgentMethodSessionPrompt:
 			return map[string]any{"stopReason": "end_turn"}, nil
-		case acp.AgentMethodSessionSetModel:
+		case agentMethodSessionSetModel:
 			return map[string]any{}, nil
 		case "session/set_config_option":
 			return map[string]any{}, nil
