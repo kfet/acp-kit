@@ -8,6 +8,25 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
+### Added
+
+- `client.Config.SecretEnvNames` and `client.Config.Secrets`: declare the
+  relay's own secrets so `Start` scrubs them from the spawned agent's
+  environment before the child ever runs. `SecretEnvNames` drops by variable
+  name; `Secrets` drops by literal value whatever the variable is named
+  (empty strings ignored). The mechanism lives next to the `Env` footgun it
+  closes: when `Env` is nil ("inherit `os.Environ()`") and any secret is
+  declared, `Start` now materialises, scrubs, and assigns `cmd.Env`
+  explicitly — leaving it nil would inherit the full environment *including*
+  the secrets, a silent no-op in exactly the case that matters most. Only
+  explicitly-declared names/values are dropped; provider credentials the
+  agent legitimately needs (e.g. `ANTHROPIC_API_KEY`, `POE_API_KEY`) are
+  untouched. Backwards compatible: a caller that sets neither field gets
+  today's behaviour exactly (nil `Env` stays nil, non-nil `Env` passes
+  through unchanged).
+
 ### Changed
 
 - Bump `github.com/coder/acp-go-sdk` v0.12.2 → v0.13.5 and

@@ -116,7 +116,26 @@ type Config struct {
 	// previous hardcoded empty list.
 	MCPServersForSession func(cwd string) []acp.McpServer
 	// Env is the environment for the child. If nil, os.Environ() is used.
+	//
+	// SECURITY: this env, or the inherited os.Environ() when Env is nil, is
+	// handed verbatim to a process that a chat relay drives with text from
+	// people who are not the operator. Any credential the child can read it
+	// can use — to impersonate the relay, read its history, or re-scope its
+	// reach — and no prompt-level guard can take that back. If the relay's
+	// own inbound secret leaks into the child's environment, declare it in
+	// SecretEnvNames (by variable name) or Secrets (by literal value) so it
+	// is dropped before the child ever starts. The child still legitimately
+	// needs provider credentials it is meant to use (e.g. ANTHROPIC_API_KEY,
+	// POE_API_KEY); scrub only the relay's own secrets, not those.
 	Env []string
+	// SecretEnvNames are environment variable names dropped from the child's
+	// environment before it is spawned — in BOTH the Env-provided and the
+	// nil-Env (inherit os.Environ()) paths.
+	SecretEnvNames []string
+	// Secrets are literal secret VALUES; any variable whose value matches one
+	// is dropped whatever it is named. Empty strings are ignored (a
+	// config-file deployment legitimately has no token in the environment).
+	Secrets []string
 	// Policy decides permission responses. If nil, AllowAllPermissions is used.
 	Policy PermissionPolicy
 	// CloseGrace is how long Close waits after SIGINT before SIGKILL. Default 2s.
@@ -153,6 +172,78 @@ type AgentProc struct {
 	availableCommands []CommandInfo
 }
 
+// hasSecrets reports whether any secret is actually declared — a name in
+// SecretEnvNames, or a non-empty literal value in Secrets. Empty value
+// strings are ignored, so a config-file deployment that carries no token in
+// its environment reads as "nothing to scrub".
+func (c Config) hasSecrets() bool {
+	if len(c.SecretEnvNames) > 0 {
+		return true
+	}
+	for _, s := range c.Secrets {
+		if s != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubbedEnv returns the environment to hand the child, with the relay's own
+// secrets removed. It is the single decision point for cmd.Env in Start, and
+// it closes the nil-Env footgun:
+//
+//   - No secrets declared → pure passthrough. Config.Env is returned as-is,
+//     so a nil Env stays nil and Start inherits os.Environ() exactly as
+//     before (backwards compatible).
+//   - Secrets declared, Env non-nil → the provided slice is scrubbed.
+//   - Secrets declared, Env nil → "inherit everything" would otherwise hand
+//     the child the full environment INCLUDING the secrets, making the scrub
+//     a silent no-op in exactly the case that matters most. So os.Environ()
+//     is materialised, scrubbed, and returned explicitly.
+//
+// The result is never nil when secrets are declared (same reason: a nil
+// cmd.Env inherits the parent environment). The caller's Env slice is never
+// mutated — a fresh slice is always built.
+func (c Config) scrubbedEnv() []string {
+	if !c.hasSecrets() {
+		return c.Env
+	}
+	env := c.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	return scrubEnv(env, c.SecretEnvNames, c.Secrets)
+}
+
+// scrubEnv returns a fresh (never nil) copy of the KEY=VALUE slice env with
+// every entry whose name is in names, or whose value literally equals a
+// non-empty entry in secrets, removed. env is not mutated.
+func scrubEnv(env, names, secrets []string) []string {
+	dropName := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		dropName[n] = struct{}{}
+	}
+	dropVal := make(map[string]struct{}, len(secrets))
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		dropVal[s] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		if _, ok := dropName[name]; ok {
+			continue
+		}
+		if _, ok := dropVal[val]; ok {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // mcpFor returns the configured MCP servers for a session cwd, or an
 // empty (non-nil) slice when no hook is set.
 func (c Config) mcpFor(cwd string) []acp.McpServer {
@@ -180,8 +271,8 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 
 	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...) //nolint:gosec // user-configured command
 	cmd.Dir = cfg.Cwd
-	if cfg.Env != nil {
-		cmd.Env = cfg.Env
+	if env := cfg.scrubbedEnv(); env != nil {
+		cmd.Env = env
 	}
 	if cfg.Stderr != nil {
 		cmd.Stderr = cfg.Stderr
