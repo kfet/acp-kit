@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-27
+
+### Added
+
+- `statusline.MaxTrailingFieldRunes` (36): a wider cap for the LAST status-line
+  segment (the live activity/tool label). Earlier fields stay at
+  `MaxFieldRunes` (12) so the header keeps its mobile-safe width.
+
 ## [0.4.0] - 2026-08-02
 
 ### Added

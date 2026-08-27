@@ -275,3 +275,30 @@ func TestCapRunes(t *testing.T) {
 		}
 	}
 }
+
+// TestMaxTrailingFieldRunes_WorstCaseWidth pins the widened trailing
+// cap and the worst-case width of a rendered status line, which is the
+// mobile-safety budget: the header (emoji + mood + plan) is unchanged,
+// only the last segment grew.
+func TestMaxTrailingFieldRunes_WorstCaseWidth(t *testing.T) {
+	if MaxTrailingFieldRunes <= MaxFieldRunes {
+		t.Fatalf("MaxTrailingFieldRunes = %d, want > MaxFieldRunes (%d)",
+			MaxTrailingFieldRunes, MaxFieldRunes)
+	}
+	// A relay joins segments with " • " (3 runes) and appends the
+	// trailing activity segment plus up to three animation dots.
+	const sep = " • "
+	segs := Segments(Status{
+		ProviderEmoji: "🏛️",
+		Mood:          strings.Repeat("m", MaxFieldRunes+9),
+		Plan:          strings.Repeat("p", MaxFieldRunes+9),
+	})
+	line := strings.Join(segs, sep) + sep +
+		CapRunes(strings.Repeat("a", MaxTrailingFieldRunes+50), MaxTrailingFieldRunes) + "..."
+	// 2 emoji runes + 3 sep + 12 mood + 3 sep + 12 plan + 3 sep + 36
+	// activity + 3 dots = 74 runes worst case.
+	const wantWorstCase = 2 + 3 + MaxFieldRunes + 3 + MaxFieldRunes + 3 + MaxTrailingFieldRunes + 3
+	if got := len([]rune(line)); got != wantWorstCase {
+		t.Errorf("worst-case line width = %d runes, want %d (line %q)", got, wantWorstCase, line)
+	}
+}

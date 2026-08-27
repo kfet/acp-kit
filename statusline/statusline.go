@@ -40,6 +40,19 @@ const ExtensionID = "dev.acp-kit.status-line/v1"
 // label must not push the header off-screen or wrap.
 const MaxFieldRunes = 12
 
+// MaxTrailingFieldRunes caps the LAST segment of a status line — the
+// live activity label (the running tool / progress verb a relay
+// appends after mood and plan). It is deliberately wider than
+// MaxFieldRunes: the trailing segment has nothing after it, so an
+// oversize value can only spill at the very end of the line instead of
+// pushing the mood/plan header off a narrow screen, and a real
+// progress string ("wait poll 7: step 1/1 Bash") is meaningless when
+// clipped to twelve runes.
+//
+// Only the trailing segment may use this cap — earlier fields stay at
+// MaxFieldRunes so the header itself keeps its mobile-safe width.
+const MaxTrailingFieldRunes = 36
+
 // Status is the renderable state of one status header. Relays build
 // this from ParseMeta (mood/plan) and their own provider-resolution
 // logic (provider emoji).
