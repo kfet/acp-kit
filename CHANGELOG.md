@@ -8,6 +8,20 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-28
+
+### Added
+
+- `client.AgentProc.NewSessionWithMeta`: create a session with extra `_meta`
+  entries on the `session/new` request, for create-time placement/routing
+  hints an agent understands (e.g. a `host` entry telling a
+  tmux-multiplexing agent which SSH host to run the session's pane on).
+  `NewSession` delegates to it with no extra entries, so the wire shape is
+  unchanged for existing callers: `_meta` stays absent unless system-prompt
+  blocks or extra entries are supplied. The reserved `session.systemPrompt`
+  key remains owned by `systemPromptBlocks` and wins over a same-named
+  extra entry.
+
 ## [0.5.0] - 2026-08-27
 
 ### Added

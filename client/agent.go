@@ -394,16 +394,34 @@ func (a *AgentProc) Caps() Caps { return a.caps }
 // will simply ignore the unknown _meta key, but skipping it keeps the
 // wire clean.
 func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error) {
+	return a.NewSessionWithMeta(ctx, cwd, sink, systemPromptBlocks, nil)
+}
+
+// NewSessionWithMeta is NewSession plus caller-supplied `_meta` entries on
+// the session/new request. Relays use it to pass create-time placement or
+// routing hints an agent understands (e.g. a `host` entry telling a
+// tmux-multiplexing agent which SSH host to run the session's pane on).
+//
+// extraMeta is merged into the request's `_meta`; the reserved
+// "session.systemPrompt" key is owned by systemPromptBlocks and overwrites
+// any same-named entry. An empty/nil extraMeta with nil systemPromptBlocks
+// leaves `_meta` absent from the wire entirely, exactly as NewSession does.
+func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
 	req := acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: a.cfg.mcpFor(cwd),
 	}
-	if systemPromptBlocks != nil {
-		req.Meta = map[string]any{
-			"session.systemPrompt": map[string]any{
-				"blocks": systemPromptBlocks,
-			},
+	if len(extraMeta) > 0 || systemPromptBlocks != nil {
+		meta := make(map[string]any, len(extraMeta)+1)
+		for k, v := range extraMeta {
+			meta[k] = v
 		}
+		if systemPromptBlocks != nil {
+			meta["session.systemPrompt"] = map[string]any{
+				"blocks": systemPromptBlocks,
+			}
+		}
+		req.Meta = meta
 	}
 	resp, err := acp.SendRequest[sessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
 	if err != nil {
