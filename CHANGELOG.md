@@ -8,6 +8,22 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `(*client.AgentProc).Done()` / `.Err()`: agent-process liveness. A single
+  reaper goroutine owns `cmd.Wait`, publishes the classified exit
+  (`ErrAgentClosed` for a deliberate `Close`, `ErrAgentExited` for a clean
+  self-exit, the `*exec.ExitError` otherwise) and closes `Done`. Relays can
+  now notice an agent that died out from under them instead of failing every
+  turn with `broken pipe`.
+
+### Fixed
+
+- `(*client.AgentProc).Close` no longer starts a second `cmd.Wait` racing the
+  reaper; it consumes the reaper's result via `Done`.
+- A child that dies during the ACP handshake is now reaped instead of leaking
+  a zombie: the reaper starts as soon as the process does.
+
 ## [0.6.0] - 2026-08-28
 
 ### Added
