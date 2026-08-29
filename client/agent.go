@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
@@ -159,6 +160,15 @@ type AgentProc struct {
 	cmd  *exec.Cmd
 	conn *acp.Connection
 	caps Caps
+
+	// Process liveness. done is closed by the single reaper goroutine
+	// (see startReaper) once cmd.Wait has returned; exitErr holds the
+	// classified exit result, stored before done is closed. closing is
+	// set by Close before it signals the child, so the reaper can tell a
+	// deliberate shutdown from an unexpected death.
+	done    chan struct{}
+	exitErr atomic.Pointer[error]
+	closing atomic.Bool
 
 	mu     sync.Mutex
 	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
@@ -302,7 +312,12 @@ func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteClose
 		cfg:   cfg,
 		cmd:   cmd,
 		sinks: make(map[acp.SessionId]SessionUpdateSink),
+		done:  make(chan struct{}),
 	}
+	// Exactly one goroutine ever calls cmd.Wait. It starts before the
+	// handshake so a child that dies during Initialize is still reaped
+	// (and so Start's error path does not leak a zombie).
+	a.startReaper()
 	a.conn = acp.NewConnection(a.dispatch, stdin, stdout)
 
 	// Use a raw map for the response so we can read the unstable
@@ -716,26 +731,103 @@ func (a *AgentProc) AuthMethods() []AuthMethod {
 // the kill-fallback branch can be exercised with a child that ignores SIGINT.
 var closeGentleSignal os.Signal = os.Interrupt
 
+// ErrAgentClosed is the exit result reported by Err when the agent
+// process went away because Close asked it to. It is the marker for
+// "this death was expected"; anything else Err reports is an unexpected
+// exit that the relay should treat as an outage.
+var ErrAgentClosed = errors.New("acp agent closed")
+
+// ErrAgentExited is the exit result reported by Err when the agent
+// process exited on its own with status 0. It exists so Err is non-nil
+// for EVERY terminated agent — a clean exit is still an outage for a
+// relay that expected a long-lived child.
+var ErrAgentExited = errors.New("acp agent exited")
+
+// startReaper launches the one and only goroutine that calls cmd.Wait
+// for this AgentProc. A child that was never started (Process == nil —
+// the in-process fakes used by tests) has nothing to reap, so done stays
+// open and Err keeps reporting "still running".
+func (a *AgentProc) startReaper() {
+	if a.cmd == nil || a.cmd.Process == nil {
+		return
+	}
+	go a.reap()
+}
+
+// reap waits for the child, classifies the exit, publishes it and
+// releases everyone blocked on Done.
+//
+// It calls cmd.Wait — the one place that ever does — which also closes
+// the parent's ends of the stdio pipes. Anything the child wrote and the
+// ACP read loop has not consumed by then is lost. That is the same tail
+// truncation Close has always had, now also on the unexpected-exit path,
+// and it is the price of never leaking the pipe fds: an agent that dies
+// is not going to finish its response anyway.
+func (a *AgentProc) reap() {
+	err := a.cmd.Wait()
+	switch {
+	case a.closing.Load():
+		// Close (or a Close racing a spontaneous exit) — expected.
+		err = ErrAgentClosed
+	case err == nil:
+		err = ErrAgentExited
+	}
+	a.exitErr.Store(&err)
+	close(a.done)
+}
+
+// Done returns a channel that is closed once the agent process has
+// exited, for any reason. It never carries a value; call Err for the
+// exit result. Modelled on context.Context.Done/Err.
+//
+// A relay watches this to notice that its agent died out from under it:
+//
+//	go func() {
+//		<-agent.Done()
+//		if err := agent.Err(); !errors.Is(err, client.ErrAgentClosed) {
+//			log.Printf("agent exited unexpectedly: %v", err)
+//			os.Exit(1) // let the supervisor rebuild us
+//		}
+//	}()
+func (a *AgentProc) Done() <-chan struct{} { return a.done }
+
+// Err reports why the agent process is gone: nil while it is still
+// running, ErrAgentClosed after a Close, ErrAgentExited after a clean
+// self-exit, and otherwise the *exec.ExitError (or wait error) from the
+// child. It is safe to call concurrently at any time and never blocks,
+// so callers can use it to classify a failed ACP call as "the agent is
+// dead" rather than string-matching broken-pipe errors.
+func (a *AgentProc) Err() error {
+	if p := a.exitErr.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 // Close terminates the agent process. Returns after the process has
-// exited (or been force-killed).
+// exited (or been force-killed). The exit itself is observed by the
+// single reaper goroutine — Close consumes that result via Done rather
+// than racing a second cmd.Wait.
 func (a *AgentProc) Close() error {
 	if a.cmd == nil || a.cmd.Process == nil {
 		return nil
 	}
+	// Mark the shutdown deliberate BEFORE signalling, so the reaper
+	// classifies the exit as ErrAgentClosed and no watcher mistakes an
+	// orderly stop for an outage.
+	a.closing.Store(true)
 	// Try a gentle stop first; fall through to Kill after a short grace.
 	grace := a.cfg.CloseGrace
 	if grace <= 0 {
 		grace = 2 * time.Second
 	}
 	_ = a.cmd.Process.Signal(closeGentleSignal)
-	done := make(chan error, 1)
-	go func() { done <- a.cmd.Wait() }()
 	select {
-	case <-done:
+	case <-a.done:
 		return nil
 	case <-time.After(grace):
 		_ = a.cmd.Process.Kill()
-		<-done
+		<-a.done
 		return nil
 	}
 }
