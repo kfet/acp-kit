@@ -61,6 +61,7 @@ func (c *loopCtrl) Schedule(conv, text string, at time.Time, every time.Duration
 	return it, nil
 }
 
+func (c *loopCtrl) CanSchedule() bool                { return true }
 func (c *loopCtrl) Schedules(string) []schedule.Item { return c.armed }
 func (c *loopCtrl) Unschedule(string, string) error  { return c.unschErr }
 

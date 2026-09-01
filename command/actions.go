@@ -63,6 +63,17 @@ type Poster interface {
 // injecting a prompt into a conversation unprompted, which a
 // request/response relay cannot do.
 type Scheduler interface {
+	// CanSchedule reports whether scheduling is available RIGHT NOW.
+	//
+	// A type assertion can only answer "this relay could schedule";
+	// it cannot answer "and the operator turned it on". zulip-acp
+	// implements Scheduler unconditionally but only has a store when
+	// `relay_mcp` is set, and without this the chat surface would
+	// advertise `!schedules` on a relay where nothing can ever be
+	// armed. Everything gates on it in one place — see Broker.scheduler
+	// — so `!help`, the commands, Status and the MCP tools appear and
+	// disappear together.
+	CanSchedule() bool
 	// Schedule arms a prompt. Depth and the caps are enforced by the
 	// store, not by the caller.
 	Schedule(convID, text string, at time.Time, every time.Duration) (schedule.Item, error)
@@ -82,13 +93,17 @@ func (b *Broker) poster() (Poster, bool) {
 }
 
 // scheduler returns the Controller's Scheduler capability, if it has
-// one.
+// one AND scheduling is actually switched on. This is the single gate:
+// every other mention of scheduling in this package goes through it.
 func (b *Broker) scheduler() (Scheduler, bool) {
 	if b.ctrl == nil {
 		return nil, false
 	}
 	s, ok := b.ctrl.(Scheduler)
-	return s, ok
+	if !ok || !s.CanSchedule() {
+		return nil, false
+	}
+	return s, true
 }
 
 // CanPost reports whether the relay can post out of band.

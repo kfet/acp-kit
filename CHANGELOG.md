@@ -28,6 +28,11 @@ once it leaves v0.
   by default: `MaxDepth` bounds a schedule→turn→schedule chain (so every chain
   terminates), `MaxPerConv` / `MaxTotal` bound breadth, `MinInterval` floors a
   repeat, and a missed window is skipped rather than replayed.
+- `command.Scheduler.CanSchedule()`: a type assertion can only say a relay
+  *could* schedule, not that the operator switched it on. Everything —
+  `!help`, the commands, `!status` and the MCP tools — gates on this one
+  answer, so a relay with scheduling implemented but disabled advertises
+  nothing.
 - `command.Poster` and `command.Scheduler`: optional `Controller`
   capabilities, in the same shape as `TurnStopper`. A relay that answers one
   HTTP request per turn (poe-acp) cannot speak out of band, so it implements

@@ -21,7 +21,10 @@ type loopbackCtrl struct {
 	addErr   error
 	unsched  [2]string
 	unschErr error
+	off      bool // scheduling implemented but switched off
 }
+
+func (c *loopbackCtrl) CanSchedule() bool { return !c.off }
 
 func (c *loopbackCtrl) PostTo(conv, text string) error {
 	c.posted = append(c.posted, [2]string{conv, text})
@@ -268,5 +271,37 @@ func TestCapitalise(t *testing.T) {
 	}
 	if got := capitalise("❌ nope"); got != "❌ nope" {
 		t.Fatalf("capitalise(non-ascii) = %q", got)
+	}
+}
+
+// TestSchedulingCanBeSwitchedOff: a relay that implements Scheduler but
+// has the feature off must advertise nothing. A type assertion can only
+// say "could"; CanSchedule says "and does".
+func TestSchedulingCanBeSwitchedOff(t *testing.T) {
+	b := withCtrl(&loopbackCtrl{off: true})
+	if b.CanSchedule() {
+		t.Fatal("a switched-off Scheduler must not advertise the capability")
+	}
+	for _, text := range []string{"!schedules", "!unschedule s01"} {
+		if b.IsCommand(text) {
+			t.Fatalf("%q must not be a command when scheduling is off", text)
+		}
+	}
+	if strings.Contains(b.help().Text, "!schedules") {
+		t.Fatalf("help advertised scheduling while off: %s", b.help().Text)
+	}
+	if _, err := b.ScheduleList("conv"); err == nil {
+		t.Fatal("want a refusal while off")
+	}
+	if _, err := b.Schedule("conv", "x", when, 0); err == nil {
+		t.Fatal("want a refusal while off")
+	}
+	if err := b.Unschedule("conv", "s01"); err == nil {
+		t.Fatal("want a refusal while off")
+	}
+	// Status must not mention schedules it cannot see.
+	got, err := b.Status("conv")
+	if err != nil || strings.Contains(got, "schedules armed") {
+		t.Fatalf("status = %q, %v", got, err)
 	}
 }
