@@ -32,6 +32,29 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `paths` — XDG state/config path helpers.
 - `log` — opt-in debug logging.
 
+## Adopting the loopback (`relaytool`)
+
+A relay needs four things, in this order:
+
+1. A `mcphost.Host` created **before** the agent starts, with
+   `client.Config.MCPServersForSession` returning
+   `host.ServerConfigForSession(<conversation key>)`, and
+   `mcphost.MaybeRunRedir` intercepted at the top of `main`.
+2. `relaytool.New{Broker, ConvToken}`, where `ConvToken` maps the mcphost
+   session key to whatever opaque token the relay hands the broker. Pass nil
+   when they are the same string.
+3. `tools.Register(host)` **after** the `Controller` is wired, because the
+   capability-dependent tools are chosen by asking the broker what the
+   Controller can do.
+4. `tools.EndTurn(convToken)` once per completed turn, after the turn is no
+   longer in flight. Without it a deferred `new_session` never applies.
+
+Implement `command.Poster` and/or `command.Scheduler` on the Controller to get
+`post` and the scheduling tools; implement neither and they are simply not
+advertised. `poe-acp` implements neither — it answers one HTTP request per
+turn and has nothing to speak on afterwards — and gets the read/steer subset.
+`zulip-acp` implements both.
+
 ## Contracts worth preserving
 
 - Idle GC drops only in-memory session bindings; it never removes conversation cwds.
