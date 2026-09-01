@@ -26,7 +26,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `mcphost` — generic self-hosted MCP server: unix socket, dumb redirector subprocess, per-session token auth, MCP JSON-RPC loop. Zero consumer-specific logic.
 - `relaytool` — the **agent→relay loopback**: exposes the relay's own bot interface to the agent as MCP tools (`status`, `list_models`, `set_model`, `new_session`, `post`, `schedule`, `list_schedules`, `unschedule`) over `mcphost` + `command`.
 - `schedule` — durable, conversation-scoped scheduled prompts with depth, breadth and rate bounds, for relays that can inject a prompt out of band.
-- `statusline` — wire contract for the `dev.acp-kit.status-line/v1` ACP extension: mood/plan header payload that agents emit on `session/update._meta` so relays can render a compact status line.
+- `statusline` — wire contract for the `dev.acp-kit.status-line/v1` ACP extension: mood/plan payload that agents emit on `session/update._meta`, plus provider-emoji and short-model-name derivation, so relays can render a compact `🏛️ opus-4.5 • steady • 2/5` status line.
 - `terminal` — agent-side ACP terminal driver: foreground exec with timeout, a bounded pool of background commands, and leak cleanup, over a narrow `Conn` interface.
 - `sysprompt` — compose base relay prompt, operator extra text, and skill catalogs.
 - `paths` — XDG state/config path helpers.

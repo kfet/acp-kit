@@ -1,14 +1,15 @@
 // Package statusline defines the wire contract for the
-// dev.acp-kit.status-line/v1 ACP extension: a tiny mood/plan header
-// that agents emit on session/update._meta so chat relays (poe-acp,
-// slack-acp, …) can render a compact status line ahead of the
-// assistant's reply.
+// dev.acp-kit.status-line/v1 ACP extension: a tiny mood/plan status
+// line that agents emit on session/update._meta so chat relays
+// (poe-acp, slack-acp, …) can render a compact identity + progress
+// line alongside the assistant's reply.
 //
 // Scope: only the shared, relay-agnostic pieces live here — the
-// extension id, length cap, Status type, provider→emoji map, and
-// ParseMeta. Each relay keeps its own renderer because the markup
-// (poe markdown vs. Slack mrkdwn) and the surface (animated spinner
-// vs. static placeholder) differ.
+// extension id, length cap, Status type, provider→emoji map, model
+// short-name derivation, and ParseMeta. Each relay keeps its own
+// renderer because the markup (poe markdown vs. Slack mrkdwn), the
+// surface (animated spinner vs. static placeholder) and the placement
+// (poe-acp renders it as an italic footer under the answer) differ.
 //
 // Wire shape:
 //
@@ -61,6 +62,13 @@ type Status struct {
 	// servicing the turn. Empty means unknown provider or the relay
 	// has no per-turn model concept — segment is then dropped.
 	ProviderEmoji string
+	// Model is the short, human-readable name of the model servicing
+	// the turn ("opus-4.5", "gpt-5-codex"), normally derived from the
+	// fully qualified model id with ShortModelName. It renders in the
+	// SAME segment as ProviderEmoji, separated by a single space —
+	// emoji and model name are one unit ("🏛️ opus-4.5"), not two
+	// bullet-separated fields. Empty means unknown.
+	Model string
 	// Mood is the agent-supplied mood label (opaque string).
 	Mood string
 	// Plan is the agent-supplied plan progress label (opaque string).
@@ -79,6 +87,105 @@ func ProviderEmojiForModel(modelID string) string {
 	}
 	return ProviderEmoji(modelID[:i])
 }
+
+// modelSuffixes are trailing decorations stripped from a model id: they
+// pin a snapshot or a release channel and carry nothing the user reads
+// off a status line. The date stamp (-YYYYMMDD) is handled separately.
+var modelSuffixes = []string{"-latest", "-preview"}
+
+// modelVendorPrefixes are leading vendor echoes stripped from a model
+// name because the provider emoji already says the same thing
+// ("🏛️ claude-opus-4.5" is redundant). Only vendor names that duplicate
+// the emoji are listed: prefixes that carry meaning as part of the model
+// family — gpt-, gemini-, grok-, llama-, deepseek- — are deliberately
+// KEPT, because "gpt-5-codex" without its prefix is not a name anyone
+// recognises.
+var modelVendorPrefixes = []string{"claude-", "anthropic-"}
+
+// ShortModelName derives the compact model label shown next to the
+// provider emoji from a fully qualified model id ("<provider>/<model>",
+// the convention fir uses). It is a display helper, not an identifier:
+// the result is lossy by design and must never be fed back onto the
+// wire.
+//
+// Rules, applied in order to the part after "<provider>/" (the whole
+// string when there is no '/'):
+//
+//  1. drop the "<provider>/" prefix
+//  2. drop a trailing date stamp "-YYYYMMDD" and a trailing "-latest" /
+//     "-preview" (repeatedly, so "-preview-20251101" fully unwinds)
+//  3. drop a leading vendor echo already carried by the emoji
+//     ("claude-", "anthropic-"); keep meaningful family prefixes
+//  4. turn version dashes BETWEEN DIGITS into dots ("4-5" → "4.5"),
+//     leaving name dashes ("gpt-5-codex") alone
+//  5. lowercase and cap to MaxFieldRunes
+//
+// An empty id returns "" — callers treat that as "drop the segment".
+func ShortModelName(modelID string) string {
+	s := strings.TrimSpace(modelID)
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	s = trimModelDecorations(s)
+	for _, p := range modelVendorPrefixes {
+		if len(s) > len(p) && strings.EqualFold(s[:len(p)], p) {
+			s = s[len(p):]
+			break
+		}
+	}
+	return CapRunes(strings.ToLower(dashesToDots(s)), MaxFieldRunes)
+}
+
+// trimModelDecorations strips trailing release-channel words and date
+// stamps until none is left, so "-preview-20251101" unwinds fully.
+func trimModelDecorations(s string) string {
+	for {
+		trimmed := false
+		for _, suf := range modelSuffixes {
+			if len(s) > len(suf) && strings.EqualFold(s[len(s)-len(suf):], suf) {
+				s, trimmed = s[:len(s)-len(suf)], true
+			}
+		}
+		if t, ok := trimDateStamp(s); ok {
+			s, trimmed = t, true
+		}
+		if !trimmed {
+			return s
+		}
+	}
+}
+
+// trimDateStamp removes a trailing "-YYYYMMDD" snapshot marker. It only
+// matches exactly eight digits after a dash, so a version segment
+// ("-4", "-5") and a parameter count ("-70b") are left alone.
+func trimDateStamp(s string) (string, bool) {
+	const n = 9 // "-" + 8 digits
+	if len(s) <= n || s[len(s)-n] != '-' {
+		return s, false
+	}
+	for _, c := range s[len(s)-n+1:] {
+		if c < '0' || c > '9' {
+			return s, false
+		}
+	}
+	return s[:len(s)-n], true
+}
+
+// dashesToDots rewrites a dash that sits BETWEEN two digits as a dot,
+// which is how model versions are actually spoken: "sonnet-4-5" is
+// "sonnet 4.5", while "gpt-5-codex" keeps its dash because "codex" is a
+// name, not a version component.
+func dashesToDots(s string) string {
+	b := []byte(s)
+	for i := 1; i < len(b)-1; i++ {
+		if b[i] == '-' && isDigit(b[i-1]) && isDigit(b[i+1]) {
+			b[i] = '.'
+		}
+	}
+	return string(b)
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // ProviderEmoji maps a provider slug (case-insensitive) to the emoji
 // shown in the status header. Returns "" for unknown providers, which
@@ -165,15 +272,21 @@ func ParseMeta(meta map[string]any) (mood, plan string, ok bool) {
 		true
 }
 
-// Segments returns the non-empty header segments in order: provider
-// emoji, mood, plan. Empty entries are dropped so a missing mood
-// doesn't leave a stray separator. Relays use this as the building
-// block for their own Header/Spinner renderers, joining with their
-// preferred separator and wrapping in surface-specific markup.
+// Segments returns the non-empty header segments in order: the
+// model identity (provider emoji + short model name), mood, plan. Empty
+// entries are dropped so a missing mood doesn't leave a stray
+// separator. Relays use this as the building block for their own
+// Header/Spinner renderers, joining with their preferred separator and
+// wrapping in surface-specific markup.
+//
+// Emoji and model name form a SINGLE segment joined by one space
+// ("🏛️ opus-4.5"): they name one thing, and a bullet between them would
+// read as two independent fields. Either half alone degrades to just
+// that half.
 func Segments(s Status) []string {
 	out := make([]string, 0, 3)
-	if e := strings.TrimSpace(s.ProviderEmoji); e != "" {
-		out = append(out, e)
+	if id := modelSegment(s); id != "" {
+		out = append(out, id)
 	}
 	if m := CapRunes(strings.TrimSpace(s.Mood), MaxFieldRunes); m != "" {
 		out = append(out, m)
@@ -182,6 +295,21 @@ func Segments(s Status) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// modelSegment renders the emoji+model unit, dropping whichever half is
+// absent and returning "" when both are.
+func modelSegment(s Status) string {
+	e := strings.TrimSpace(s.ProviderEmoji)
+	m := CapRunes(strings.TrimSpace(s.Model), MaxFieldRunes)
+	switch {
+	case e != "" && m != "":
+		return e + " " + m
+	case e != "":
+		return e
+	default:
+		return m
+	}
 }
 
 // CapRunes truncates s to at most n runes. No ellipsis is appended:

@@ -245,6 +245,31 @@ func TestSegments(t *testing.T) {
 			Status{Mood: strings.Repeat("a", MaxFieldRunes+5), Plan: "ok"},
 			[]string{strings.Repeat("a", MaxFieldRunes), "ok"},
 		},
+		{
+			"emoji and model are one space-joined segment",
+			Status{ProviderEmoji: "🏛️", Model: "opus-4.5", Mood: "steady", Plan: "2/5"},
+			[]string{"🏛️ opus-4.5", "steady", "2/5"},
+		},
+		{
+			"model only degrades to the bare name",
+			Status{Model: "gpt-5-codex", Mood: "steady"},
+			[]string{"gpt-5-codex", "steady"},
+		},
+		{
+			"emoji only degrades to the bare emoji",
+			Status{ProviderEmoji: "👻", Mood: "steady"},
+			[]string{"👻", "steady"},
+		},
+		{
+			"whitespace model is dropped",
+			Status{ProviderEmoji: "🏛️", Model: "  "},
+			[]string{"🏛️"},
+		},
+		{
+			"oversize model gets capped",
+			Status{ProviderEmoji: "🏛️", Model: strings.Repeat("z", MaxFieldRunes+4)},
+			[]string{"🏛️ " + strings.Repeat("z", MaxFieldRunes)},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -253,6 +278,53 @@ func TestSegments(t *testing.T) {
 				t.Errorf("Segments(%+v) = %v, want %v", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// TestShortModelName pins the derivation table from the brief: the
+// label a user reads next to the provider emoji.
+func TestShortModelName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// The brief's table.
+		{"anthropic/claude-opus-4-5-20251001", "opus-4.5"},
+		{"anthropic/claude-sonnet-4-5", "sonnet-4.5"},
+		{"openai/gpt-5-codex", "gpt-5-codex"},
+		{"google/gemini-3-pro-preview", "gemini-3-pro"},
+		{"poe/Claude-Opus-4.5", "opus-4.5"},
+		{"", ""},
+		{"no-slash-thing", "no-slash-thi"}, // capped at MaxFieldRunes
+
+		// Meaningful family prefixes survive.
+		{"xai/grok-4", "grok-4"},
+		// Every dash between two digits becomes a dot — including the
+		// one before a parameter count.
+		{"meta/llama-3-3-70b", "llama-3.3.70"},
+		{"deepseek/deepseek-chat", "deepseek-cha"},
+
+		// Decorations unwind in any order and repeatedly.
+		{"google/gemini-3-pro-preview-20251101", "gemini-3-pro"},
+		{"anthropic/claude-opus-4-5-latest", "opus-4.5"},
+
+		// A vendor echo that is the WHOLE name is not stripped to "".
+		{"anthropic/claude-", "claude-"},
+		{"anthropic/anthropic-x", "x"},
+
+		// Digit-adjacency only: a dash before a word stays a dash, and a
+		// bare eight-digit-looking tail that isn't a date stamp is kept.
+		{"openai/gpt-4o-mini", "gpt-4o-mini"},
+		{"x/thing-1234567", "thing-1234567"[:MaxFieldRunes]},
+
+		// Whitespace and casing.
+		{"  Anthropic/Claude-Sonnet-4-5  ", "sonnet-4.5"},
+		{"/leading-slash", "leading-slas"},
+	}
+	for _, c := range cases {
+		if got := ShortModelName(c.in); got != c.want {
+			t.Errorf("ShortModelName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -278,8 +350,9 @@ func TestCapRunes(t *testing.T) {
 
 // TestMaxTrailingFieldRunes_WorstCaseWidth pins the widened trailing
 // cap and the worst-case width of a rendered status line, which is the
-// mobile-safety budget: the header (emoji + mood + plan) is unchanged,
-// only the last segment grew.
+// mobile-safety budget: the leading identity segment is emoji + space +
+// model (both capped), mood and plan are unchanged, and only the last
+// segment uses the wider trailing cap.
 func TestMaxTrailingFieldRunes_WorstCaseWidth(t *testing.T) {
 	if MaxTrailingFieldRunes <= MaxFieldRunes {
 		t.Fatalf("MaxTrailingFieldRunes = %d, want > MaxFieldRunes (%d)",
@@ -290,14 +363,16 @@ func TestMaxTrailingFieldRunes_WorstCaseWidth(t *testing.T) {
 	const sep = " • "
 	segs := Segments(Status{
 		ProviderEmoji: "🏛️",
+		Model:         strings.Repeat("d", MaxFieldRunes+9),
 		Mood:          strings.Repeat("m", MaxFieldRunes+9),
 		Plan:          strings.Repeat("p", MaxFieldRunes+9),
 	})
 	line := strings.Join(segs, sep) + sep +
 		CapRunes(strings.Repeat("a", MaxTrailingFieldRunes+50), MaxTrailingFieldRunes) + "..."
-	// 2 emoji runes + 3 sep + 12 mood + 3 sep + 12 plan + 3 sep + 36
-	// activity + 3 dots = 74 runes worst case.
-	const wantWorstCase = 2 + 3 + MaxFieldRunes + 3 + MaxFieldRunes + 3 + MaxTrailingFieldRunes + 3
+	// 2 emoji runes + 1 space + 12 model + 3 sep + 12 mood + 3 sep + 12
+	// plan + 3 sep + 36 activity + 3 dots = 87 runes worst case.
+	const wantWorstCase = 2 + 1 + MaxFieldRunes + 3 + MaxFieldRunes + 3 + MaxFieldRunes +
+		3 + MaxTrailingFieldRunes + 3
 	if got := len([]rune(line)); got != wantWorstCase {
 		t.Errorf("worst-case line width = %d runes, want %d (line %q)", got, wantWorstCase, line)
 	}

@@ -8,6 +8,28 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-02
+
+### Added
+
+- `statusline.Status.Model` and `statusline.ShortModelName`: the compact
+  model label shown next to the provider emoji. `ShortModelName` derives it
+  from a fully qualified `<provider>/<model>` id by dropping the provider
+  prefix, trailing `-YYYYMMDD` / `-latest` / `-preview` decorations and a
+  leading vendor echo already carried by the emoji (`claude-`,
+  `anthropic-`), rewriting version dashes between digits as dots, then
+  lowercasing and capping to `MaxFieldRunes` — e.g.
+  `anthropic/claude-opus-4-5-20251001` → `opus-4.5`. Meaningful family
+  prefixes (`gpt-`, `gemini-`, `grok-`, `llama-`, `deepseek-`) are kept.
+
+### Changed
+
+- `statusline.Segments` now emits the provider emoji and model name as ONE
+  space-joined segment (`🏛️ opus-4.5`) rather than the emoji alone, so a
+  relay joining with `" • "` renders `🏛️ opus-4.5 • steady • 2/5`. Either
+  half alone degrades to just that half; a `Status` with no `Model` renders
+  exactly as before.
+
 ## [0.9.1] - 2026-09-01
 
 ### Fixed
