@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-01
+
 ### Added
 
 - **`command`: the shared relay chat-command surface**, promoted from
