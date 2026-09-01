@@ -32,10 +32,23 @@ func (c *fakeCtrl) StatusFor(string) SessionStatus      { return c.status }
 func (c *fakeCtrl) AgentCommands() []client.CommandInfo { return c.agentCmds }
 func (c *fakeCtrl) RelayInfo(string) RelayInfo          { return c.relayInfo }
 
-func withCtrl(c *fakeCtrl) *Broker {
+func withCtrl(c Controller) *Broker {
 	b := New(newFake())
 	b.SetController(c)
 	return b
+}
+
+// stoppingCtrl is a Controller that ALSO implements TurnStopper, which
+// is what turns `!stop` into a recognised command.
+type stoppingCtrl struct {
+	fakeCtrl
+	stopped  string
+	stopping bool
+}
+
+func (c *stoppingCtrl) StopTurn(convID string) bool {
+	c.stopped = convID
+	return c.stopping
 }
 
 type fakeAuth struct {
@@ -435,8 +448,9 @@ func TestIsCommand(t *testing.T) {
 		"!foo":             false,
 		"hello":            false,
 	}
+	b := New(newFake())
 	for in, want := range cases {
-		if got := IsCommand(in); got != want {
+		if got := b.IsCommand(in); got != want {
 			t.Errorf("IsCommand(%q) = %v, want %v", in, got, want)
 		}
 	}
@@ -645,15 +659,24 @@ func TestHelp_DynamicWithController(t *testing.T) {
 }
 
 func TestIsCommand_SessionVerbs(t *testing.T) {
+	b := withCtrl(&fakeCtrl{})
 	for _, c := range []string{"!status", "!whoami", "!models", "!models foo", "!model", "!model x", "!new", "!reset", ".status"} {
-		if !IsCommand(c) {
+		if !b.IsCommand(c) {
 			t.Errorf("IsCommand(%q) = false, want true", c)
 		}
 	}
 	for _, c := range []string{"!statusx", "!modelss", "status", "!newish"} {
-		if IsCommand(c) {
+		if b.IsCommand(c) {
 			t.Errorf("IsCommand(%q) = true, want false", c)
 		}
+	}
+	// A Controller with no TurnStopper does not recognise !stop, so the
+	// text reaches the agent as ordinary prose.
+	if b.IsCommand("!stop") {
+		t.Error("!stop is a command without a TurnStopper")
+	}
+	if !withCtrl(&stoppingCtrl{}).IsCommand("!stop") {
+		t.Error("!stop is not a command with a TurnStopper")
 	}
 }
 
@@ -786,7 +809,7 @@ func TestRelayAlias(t *testing.T) {
 
 	// IsCommand recognises both sigil spellings.
 	for _, c := range []string{"!relay", "/relay", ".bot", "!bot"} {
-		if !IsCommand(c) {
+		if !b.IsCommand(c) {
 			t.Fatalf("IsCommand(%q) = false, want true", c)
 		}
 	}
@@ -827,8 +850,89 @@ func TestLoginCancel(t *testing.T) {
 
 	// Recognised as a command / login command.
 	for _, c := range []string{"!login cancel", "/login cancel", ".login cancel"} {
-		if !IsCommand(c) || !IsLoginCommand(c) {
+		if !b.IsCommand(c) || !IsLoginCommand(c) {
 			t.Fatalf("%q should be a login command", c)
 		}
+	}
+}
+
+// TestStop covers the `!stop` capability in all three of its states:
+// unavailable (no Controller), present-but-idle, and present-and-running.
+func TestStop(t *testing.T) {
+	// Interrupted something.
+	c := &stoppingCtrl{stopping: true}
+	b := withCtrl(c)
+	out, err := b.Handle(context.Background(), "conv-7", "!stop")
+	if err != nil || out == nil {
+		t.Fatalf("stop: out=%+v err=%v", out, err)
+	}
+	if !strings.Contains(out.Text, "Interrupted") {
+		t.Fatalf("stop: %q", out.Text)
+	}
+	if c.stopped != "conv-7" {
+		t.Fatalf("StopTurn got convID %q, want conv-7", c.stopped)
+	}
+
+	// Nothing running: a clear message, not a lie about having stopped.
+	idle := withCtrl(&stoppingCtrl{stopping: false})
+	if g := hb(idle, "!stop"); !strings.Contains(g, "Nothing is running") {
+		t.Fatalf("idle stop: %q", g)
+	}
+
+	// Every accepted sigil reaches it.
+	for _, spelling := range []string{"/stop", ".stop", "!STOP"} {
+		if g := hb(withCtrl(&stoppingCtrl{stopping: true}), spelling); !strings.Contains(g, "Interrupted") {
+			t.Fatalf("%s: %q", spelling, g)
+		}
+	}
+
+	// help advertises it only where it works.
+	if h := withCtrl(&stoppingCtrl{}).help(); !strings.Contains(h.Text, "!stop") {
+		t.Fatalf("help should list !stop with a TurnStopper: %s", h.Text)
+	}
+	if h := withCtrl(&fakeCtrl{}).help(); strings.Contains(h.Text, "!stop") {
+		t.Fatalf("help must not list !stop without a TurnStopper: %s", h.Text)
+	}
+
+	// `cancel` is NOT an alias: it belongs to the login family, and a
+	// word that sometimes aborts a login and sometimes kills a turn is
+	// the worst ambiguity in the command a user reaches for in a panic.
+	stop := withCtrl(&stoppingCtrl{stopping: true})
+	if g := hb(stop, "!cancel-login"); strings.Contains(g, "Interrupted") {
+		t.Fatalf("!cancel-login must not stop a turn: %q", g)
+	}
+	if g := hb(stop, "!login cancel"); strings.Contains(g, "Interrupted") {
+		t.Fatalf("!login cancel must not stop a turn: %q", g)
+	}
+
+	// Unreachable via Handle, but the guard is real: a Broker with no
+	// Controller at all.
+	if got := New(newFake()).stop("c"); !strings.Contains(got.Text, "unavailable") {
+		t.Fatalf("stop without a controller: %q", got.Text)
+	}
+}
+
+// TestCommandNamesAreCaseInsensitive: a phone keyboard capitalises the
+// first letter of a message by default, so a case-sensitive command
+// name fails silently for exactly the users most likely to be typing
+// one-handed.
+func TestCommandNamesAreCaseInsensitive(t *testing.T) {
+	b := withCtrl(&fakeCtrl{models: []client.ModelInfo{{ID: "anthropic/Opus-4"}}})
+	for _, spelling := range []string{"!New", "!NEW", "!ReSeT", "!Status", "!HELP", "!Model"} {
+		if !b.IsCommand(spelling) {
+			t.Errorf("IsCommand(%q) = false", spelling)
+		}
+	}
+	if !IsLoginCommand("!LOGIN") {
+		t.Error("IsLoginCommand(!LOGIN) = false")
+	}
+	// The ARGUMENT keeps its case: a model id is a literal the agent
+	// must match, so folding it would break the one command taking one.
+	c := &fakeCtrl{models: []client.ModelInfo{{ID: "anthropic/Opus-4"}}}
+	if g := hb(withCtrl(c), "!MODEL anthropic/Opus-4"); !strings.Contains(g, "Model set to") {
+		t.Fatalf("mixed-case id should switch: %q", g)
+	}
+	if c.lastSet[1] != "anthropic/Opus-4" {
+		t.Fatalf("argument was case-folded: %q", c.lastSet[1])
 	}
 }

@@ -88,6 +88,34 @@ type Controller interface {
 	RelayInfo(convID string) RelayInfo
 }
 
+// TurnStopper is the OPTIONAL capability behind `!stop`. A Controller
+// that implements it enables the command; one that does not leaves
+// `!stop` unrecognised, so the text forwards to the agent as ordinary
+// prose exactly as before.
+//
+// That conditionality is the point. Only a relay that streams a turn
+// has anything to interrupt: poe-acp answers one HTTP request per turn
+// and has no in-flight turn a later message could reach, while
+// zulip-acp streams into an editable message and very much does.
+// Advertising a command that cannot work on half the relays would be
+// worse than not having it.
+//
+// StopTurn reports whether it actually stopped something, so the reply
+// can tell interrupting from doing nothing.
+type TurnStopper interface {
+	StopTurn(convID string) bool
+}
+
+// stopper returns the Controller's TurnStopper capability, if it has
+// one.
+func (b *Broker) stopper() (TurnStopper, bool) {
+	if b.ctrl == nil {
+		return nil, false
+	}
+	ts, ok := b.ctrl.(TurnStopper)
+	return ts, ok
+}
+
 // passthroughAllow is the curated set of agent-advertised commands the
 // relay is willing to forward as chat commands (`!reload` → `/reload`).
 // Kept deliberately small and safe: read-only, non-destructive, or
@@ -181,6 +209,7 @@ func (b *Broker) Passthrough(text string) (rewritten string, ok bool) {
 	if !has || body == "" {
 		return "", false
 	}
+	body = foldVerb(body)
 	name := body
 	if i := strings.IndexByte(body, ' '); i >= 0 {
 		name = body[:i]
@@ -264,6 +293,24 @@ func stripSigil(t string) (body string, ok bool) {
 	return t, false
 }
 
+// foldVerb lower-cases the command WORD of a sigil-stripped body and
+// leaves its argument exactly as typed.
+//
+// Command names are case-insensitive — "!NEW" and "!New" are "!new" —
+// because a phone keyboard capitalises the first letter of a message
+// by default, which would otherwise make every command typed at the
+// start of a line silently fail. The argument must NOT be folded: a
+// model id like "anthropic/Claude-Opus" is a literal the agent has to
+// match, and case-folding it would break the one command that takes an
+// id.
+func foldVerb(body string) string {
+	i := strings.IndexByte(body, ' ')
+	if i < 0 {
+		return strings.ToLower(body)
+	}
+	return strings.ToLower(body[:i]) + body[i:]
+}
+
 // isLoginBody reports whether a sigil-stripped command body is one of the
 // login-family commands.
 func isLoginBody(body string) bool {
@@ -291,12 +338,23 @@ func IsLoginCommand(text string) bool {
 	if !ok {
 		return false
 	}
-	return isLoginBody(body)
+	return isLoginBody(foldVerb(body))
 }
 
 // isSessionBody reports whether a sigil-stripped body is one of the
 // session-control commands (handled only when a Controller is wired).
-func isSessionBody(body string) bool {
+//
+// `stop` is conditional on the TurnStopper capability — see there. Note
+// the spelling: `cancel` is NOT an alias for it, because `!login
+// cancel` and the older `!cancel-login` already own that word. A
+// `!cancel` that sometimes aborted a login and sometimes killed a turn
+// would be the worst possible ambiguity in the one command a user
+// reaches for when something has gone wrong.
+func (b *Broker) isSessionBody(body string) bool {
+	if body == "stop" {
+		_, ok := b.stopper()
+		return ok
+	}
 	switch {
 	case body == "status" || body == "whoami":
 		return true
@@ -312,16 +370,21 @@ func isSessionBody(body string) bool {
 	return false
 }
 
-// IsCommand reports whether text is any relay command the broker handles
-// (the login family, "help", or a session command), under any accepted
-// sigil. The HTTP handler uses this to decide whether to route a turn to
+// IsCommand reports whether text is any relay command THIS broker
+// handles (the login family, "help", or a session command), under any
+// accepted sigil. A relay uses it to decide whether to route a turn to
 // the broker instead of forwarding it to the agent.
-func IsCommand(text string) bool {
+//
+// It is a method rather than a package function because the answer
+// depends on the wired Controller: `!stop` is a command only where the
+// relay can actually stop a turn.
+func (b *Broker) IsCommand(text string) bool {
 	body, ok := stripSigil(strings.TrimSpace(text))
 	if !ok {
 		return false
 	}
-	return body == "help" || isLoginBody(body) || isSessionBody(body)
+	body = foldVerb(body)
+	return body == "help" || isLoginBody(body) || b.isSessionBody(body)
 }
 
 // Outcome is what the HTTP handler should render to the user. Exactly
@@ -349,6 +412,7 @@ type Outcome struct {
 func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, error) {
 	t := strings.TrimSpace(text)
 	body, hasSigil := stripSigil(t)
+	body = foldVerb(body)
 
 	// Help is stateless and never collides with a pasted redirect URL
 	// (those never carry a sigil), so it wins even mid-login.
@@ -389,6 +453,8 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		return b.model(convID, strings.TrimSpace(strings.TrimPrefix(body, "model"))), nil
 	case body == "new" || body == "reset":
 		return b.reset(convID), nil
+	case body == "stop":
+		return b.stop(convID), nil
 	default:
 		// Sigil-prefixed but not a login command — not ours.
 		return nil, nil
@@ -430,6 +496,9 @@ func (b *Broker) help() *Outcome {
 		sb.WriteString("- `" + s + "status` — model, session and relay info\n")
 		sb.WriteString("- `" + s + "model [filter|id]` — list/filter models, or switch\n")
 		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
+		if _, ok := b.stopper(); ok {
+			sb.WriteString("- `" + s + "stop` — interrupt the turn currently running\n")
+		}
 	}
 	sb.WriteString("- `" + s + "login [provider|cancel]` — connect a provider (e.g. `" + s +
 		"login anthropic`), or abort a login in progress\n")
@@ -591,6 +660,22 @@ func (b *Broker) reset(convID string) *Outcome {
 		return &Outcome{Text: fmt.Sprintf("Couldn't reset: %v.", err)}
 	}
 	return &Outcome{Text: "🧹 Fresh session — previous context cleared. Your model choice is kept."}
+}
+
+// stop interrupts the turn currently running for the conversation.
+//
+// Unreachable unless the Controller implements TurnStopper, because
+// IsCommand refuses to classify `!stop` as a command otherwise and
+// Handle is only reached for recognised commands.
+func (b *Broker) stop(convID string) *Outcome {
+	ts, ok := b.stopper()
+	if !ok {
+		return &Outcome{Text: "Session control is unavailable."}
+	}
+	if !ts.StopTurn(convID) {
+		return &Outcome{Text: "Nothing is running here."}
+	}
+	return &Outcome{Text: "🛑 Interrupted."}
 }
 
 // list renders the available login methods.
