@@ -281,6 +281,18 @@ const commandSigils = "/!."
 // client-side slash-command interceptor.
 const DisplaySigil = "!"
 
+// StripSigil removes a single leading command sigil from t and reports
+// whether one was present. Exported for relays that must apply a
+// surface-specific policy BEFORE the broker sees a message — e.g.
+// zulip-acp has to recognise Zulip's own /me, /poll and /todo, which
+// unlike Zulip's client-side slash commands do arrive as real messages
+// and widgets, and pass them through untouched.
+//
+// Whitespace is trimmed here, so callers need not.
+func StripSigil(t string) (body string, ok bool) {
+	return stripSigil(strings.TrimSpace(t))
+}
+
 // stripSigil removes a single leading command sigil from t (which must
 // already be TrimSpace'd) and reports whether one was present.
 func stripSigil(t string) (body string, ok bool) {

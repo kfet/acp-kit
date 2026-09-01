@@ -936,3 +936,26 @@ func TestCommandNamesAreCaseInsensitive(t *testing.T) {
 		t.Fatalf("argument was case-folded: %q", c.lastSet[1])
 	}
 }
+
+// TestStripSigil covers the exported helper relays use to build a
+// surface-specific pre-filter ahead of the broker.
+func TestStripSigil(t *testing.T) {
+	cases := []struct {
+		in   string
+		body string
+		ok   bool
+	}{
+		{"!new", "new", true},
+		{"/me waves", "me waves", true},
+		{".status", "status", true},
+		{"  !new  ", "new", true},
+		{"hello", "hello", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		body, ok := StripSigil(c.in)
+		if body != c.body || ok != c.ok {
+			t.Errorf("StripSigil(%q) = %q, %v; want %q, %v", c.in, body, ok, c.body, c.ok)
+		}
+	}
+}

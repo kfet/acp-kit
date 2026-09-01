@@ -8,6 +8,38 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- **`command`: the shared relay chat-command surface**, promoted from
+  `poe-acp/internal/command` so `poe-acp` and `zulip-acp` stop carrying two
+  copies of the same 650-line broker. Covers the `!login` family and its
+  two-call `_meta.auth.interactive` bridge, `!help` / `!status` /
+  `!model [filter|id]` / `!new`, the undocumented back-compat aliases
+  (`!models`, `!relay`, `!bot`, `!whoami`, `!reset`, `!cancel-login`), and the
+  curated agent-command passthrough allowlist. Sigils `/`, `!` and `.` are
+  accepted on input; `!` is the `DisplaySigil`. Rendering stays in this
+  package: Poe, Zulip and Slack all read CommonMark-ish markdown and the
+  strings are legal in all three verbatim.
+- `command.TurnStopper`: an optional Controller capability enabling `!stop`.
+  A Controller that does not implement it leaves `!stop` unrecognised, so the
+  text forwards to the agent unchanged — only a relay that streams a turn has
+  something to interrupt. Deliberately **not** spelled `!cancel`, which
+  `!login cancel` / `!cancel-login` already own.
+- `command.SessionStatus` gains optional `ConvID`, `StateDir`, `Where` and
+  `TurnRunning` fields for relays that give a conversation its own identity,
+  directory and place. The renderer prints only what is set, so a controller
+  that leaves them empty produces the same output as before.
+- `command.StripSigil`, exported for relays that must pre-filter by surface
+  before the broker sees a message (zulip-acp passes Zulip's `/me`, `/poll`
+  and `/todo` through untouched).
+
+### Changed
+
+- `command` names are matched case-insensitively on the verb only; the
+  argument keeps its case, since a model id is a literal the agent must match.
+- `IsCommand` is a `*Broker` method rather than a package function: whether
+  `!stop` is a command depends on the wired Controller.
+
 ## [0.7.0] - 2026-08-29
 
 ### Added
