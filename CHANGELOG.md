@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-01
+
 ### Added
 
 - **`relaytool`: the agent→relay loopback.** Exposes a relay's own bot
