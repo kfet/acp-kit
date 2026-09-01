@@ -1,25 +1,52 @@
-// Package command implements the relay's chat-command surface: it
-// brokers interactive OAuth login (bridging Poe turns into fir's
-// _meta.auth.interactive two-call protocol) and the session-control
-// commands (!status, !model, !new, !help).
+// Package command is the shared chat-command surface every relay puts
+// in front of an ACP agent: it brokers interactive OAuth login
+// (bridging one chat turn into the agent's _meta.auth.interactive
+// two-call protocol) and the session-control commands (!status,
+// !model, !new, !stop, !help).
 //
 // The user-facing surface is deliberately small: !help, !status,
-// !model [filter|id], !new, !login [provider|cancel]. Older spellings
-// (!models, !relay, !bot, !cancel-login, !whoami, !reset) still work as
-// undocumented aliases so nothing a user has learned ever breaks.
+// !model [filter|id], !new, !stop, !login [provider|cancel]. Older
+// spellings (!models, !relay, !bot, !cancel-login, !whoami, !reset)
+// still work as undocumented aliases so nothing a user has learned
+// ever breaks.
 //
-// Each Poe conversation can have at most one in-flight login. The first
-// login command (e.g. "!login anthropic") calls fir's authenticate to
-// produce a URL; the next user turn from the same conversation submits
-// the pasted redirect URL. The broker holds no goroutines — the actual
-// blocking on the user input happens inside fir, parked across turns.
-// The relay only remembers which conversation has a pending login for
-// which method.
+// # What lives here and what does not
+//
+// Everything surface-independent: sigil handling, command
+// classification, the login state machine, the passthrough allowlist,
+// and the rendering — which stays shared because Poe, Zulip and Slack
+// all read CommonMark-ish markdown and the strings are legal in all
+// three verbatim. Duplicating identical prose per relay would recreate
+// exactly the fork this package exists to remove. When a surface
+// genuinely needs different markup, THAT is the moment to introduce a
+// renderer interface, and not before.
+//
+// What does not live here: anything that knows how a message arrives
+// or is posted. The relay owns delivery, gating (who may speak to the
+// bot), and any surface-specific pre-filter — e.g. zulip-acp must let
+// Zulip's own /me, /poll and /todo widgets through untouched before
+// the broker ever sees them, using the exported StripSigil helper.
+//
+// # Login
+//
+// Each conversation can have at most one in-flight login. The first
+// login command (e.g. "!login anthropic") calls the agent's
+// authenticate to produce a URL; the next user turn from the same
+// conversation submits the pasted redirect URL. The broker holds no
+// goroutines — the actual blocking on user input happens inside the
+// agent, parked across turns. The relay only remembers which
+// conversation has a pending login for which method.
+//
+// # Sigils
 //
 // Commands accept the sigils "/", "!", and "." but user-facing prose
-// suggests "!" (DisplaySigil): Poe's chat client intercepts "/"-prefixed
-// messages as native slash commands and rejects unknown ones before they
-// reach the bot, so "/login" is unreliable; "!"/"." pass straight through.
+// suggests "!" (DisplaySigil). Poe's chat client intercepts
+// "/"-prefixed messages as native slash commands and rejects unknown
+// ones before they reach the bot; Zulip's slash commands are handled
+// client-side against /json/command and never reach a bot at all,
+// while /me, /poll and /todo DO arrive as messages or widgets. So "/"
+// is unsafe to advertise on either surface, and "!"/"." pass straight
+// through on both.
 package command
 
 import (
@@ -40,11 +67,18 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (client.AuthResult, error)
 }
 
-// Controller is the per-conversation session-control surface used by the
-// non-auth commands (!status, !model, !new). *router.Router
-// satisfies it. Optional: if nil, those commands report unavailable.
-// (router never imports command — the dependency edge is one-way:
-// command → router.)
+// Controller is the per-conversation session-control surface used by
+// the non-auth commands (!status, !model, !new). Each relay implements
+// it over whatever it uses for session state. Optional: if nil, those
+// commands report unavailable. The dependency edge is one-way — a
+// relay's session layer never imports this package.
+//
+// convID is an OPAQUE, relay-chosen conversation token. The broker
+// only ever hands it back; it never parses it and never assumes it is
+// stable. Implementations are free to re-key the underlying session or
+// identity behind it — zulip-acp's ResetSession retires a journal entry
+// and allocates a fresh conversation id, which the broker neither sees
+// nor needs to.
 type Controller interface {
 	AvailableModels() (models []client.ModelInfo, currentID string)
 	SetModelOverride(convID, modelID string) error
@@ -81,6 +115,9 @@ var passthroughAllow = map[string]bool{
 //     operations that make no sense driven from a Poe chat turn.
 
 // SessionStatus is a race-free snapshot of a conversation's relay state.
+// Every field is optional: the renderer prints only what is set, so a
+// relay reports what it actually knows rather than padding the rest
+// with plausible-looking blanks.
 type SessionStatus struct {
 	EffectiveModel  string // override if set, else the configured default
 	DefaultModel    string
@@ -88,6 +125,21 @@ type SessionStatus struct {
 	Thinking        string
 	HasSession      bool
 	ModelsAvailable int
+
+	// ConvID is the relay's own identifier for this conversation,
+	// shown so a human can find its state on disk. Empty when the
+	// relay has no such notion, or has not allocated one yet.
+	ConvID string
+	// StateDir is the conversation's working directory. Empty when the
+	// relay does not give a conversation its own directory.
+	StateDir string
+	// Where renders the conversation in human terms — "#fleet >
+	// \"hacking\"", "DM with Kfet". Empty when the surface has only one
+	// place for a conversation to be.
+	Where string
+	// TurnRunning reports whether a turn is in flight right now. Only
+	// meaningful on a relay that can tell; see TurnStopper.
+	TurnRunning bool
 }
 
 // RelayInfo is a snapshot of relay-process realtime state, surfaced by
@@ -407,6 +459,9 @@ func (b *Broker) status(convID string) *Outcome {
 	ri := b.ctrl.RelayInfo(convID)
 	var sb strings.Builder
 	sb.WriteString("**Status**\n\n")
+	if st.Where != "" {
+		fmt.Fprintf(&sb, "- here: %s\n", st.Where)
+	}
 	fmt.Fprintf(&sb, "- model: `%s`", st.EffectiveModel)
 	if st.OverrideModel != "" {
 		fmt.Fprintf(&sb, " (set via %smodel)", DisplaySigil)
@@ -423,6 +478,15 @@ func (b *Broker) status(convID string) *Outcome {
 		sess += " `" + ri.SessionID + "`"
 	}
 	fmt.Fprintf(&sb, "- session: %s\n", sess)
+	if st.ConvID != "" {
+		fmt.Fprintf(&sb, "- conversation: `%s`\n", st.ConvID)
+	}
+	if st.StateDir != "" {
+		fmt.Fprintf(&sb, "- state dir: `%s`\n", st.StateDir)
+	}
+	if st.TurnRunning {
+		fmt.Fprintf(&sb, "- turn running: yes — `%sstop` interrupts it\n", DisplaySigil)
+	}
 	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
 	if ri.Version != "" {
 		fmt.Fprintf(&sb, "- relay: `%s`\n", ri.Version)

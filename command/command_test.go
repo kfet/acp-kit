@@ -482,6 +482,8 @@ func TestStatus(t *testing.T) {
 		status: SessionStatus{
 			EffectiveModel: "anthropic/x", OverrideModel: "anthropic/x",
 			Thinking: "low", HasSession: true, ModelsAvailable: 7,
+			ConvID: "c123", StateDir: "/var/state/convs/c123",
+			Where: `#fleet > "hacking"`, TurnRunning: true,
 		},
 		relayInfo: RelayInfo{
 			Version: "9.9.9", Uptime: "3h2m1s", AgentCmd: "fir --mode acp",
@@ -493,6 +495,13 @@ func TestStatus(t *testing.T) {
 	for _, w := range []string{"anthropic/x", "low", "7", "active", "!model"} {
 		if !strings.Contains(got, w) {
 			t.Fatalf("status missing %q: %s", w, got)
+		}
+	}
+	// ...the relay-optional conversation fields, for a relay that
+	// gives each conversation its own identity and directory...
+	for _, w := range []string{`#fleet > "hacking"`, "c123", "/var/state/convs/c123", "turn running: yes"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("status missing conversation field %q: %s", w, got)
 		}
 	}
 	// ...plus the relay info folded in from the former !relay.
@@ -510,6 +519,14 @@ func TestStatus(t *testing.T) {
 	for _, bad := range []string{"relay:", "uptime:", "agent:"} {
 		if strings.Contains(g, bad) {
 			t.Fatalf("status should omit empty relay field %q:\n%s", bad, g)
+		}
+	}
+	// The relay-optional conversation fields are omitted just as
+	// cleanly when the relay has no notion of them — a Poe-shaped
+	// controller must not sprout empty "conversation:" lines.
+	for _, bad := range []string{"here:", "conversation:", "state dir:", "turn running:"} {
+		if strings.Contains(g, bad) {
+			t.Fatalf("status should omit unset conversation field %q:\n%s", bad, g)
 		}
 	}
 }
