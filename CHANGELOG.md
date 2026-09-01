@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-01
+
+### Fixed
+
+- `command.Scheduler` gains `CanSchedule()`, and `Broker.scheduler` is now the
+  single gate for the whole scheduling surface — `!help`, the commands,
+  `!status` and the MCP tools. A relay that implements `Scheduler` but has the
+  feature switched off (zulip-acp without `relay_mcp`) no longer advertises
+  commands nothing can serve.
+
 ## [0.9.0] - 2026-09-01
 
 ### Added
