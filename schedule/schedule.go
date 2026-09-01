@@ -30,7 +30,11 @@
 //     item created outside any firing turn has depth 1; one created
 //     inside a firing turn has its parent's depth plus one, and Add
 //     refuses anything above MaxDepth. Every chain therefore
-//     terminates.
+//     terminates. Attribution starts when Fire is CALLED, not when the
+//     turn it starts begins, so a relay that makes Fire queue behind a
+//     human turn will attribute that human turn's schedules to the
+//     waiting item. That over-restricts rather than under-restricts,
+//     which is the direction a safety bound should err in.
 //   - MaxPerConv and MaxTotal cap how many items can be armed at once,
 //     so breadth is bounded even where depth is not reached.
 //   - MinInterval floors a repeat, so `every` cannot become a busy
@@ -390,12 +394,12 @@ func (s *Store) due() []Item {
 // on startup. Catching up on missed work is not what a schedule means.
 func nextAfter(at time.Time, every time.Duration, now time.Time) time.Time {
 	next := at.Add(every)
-	if next.After(now) {
-		return next
+	if !next.After(now) {
+		// Jump straight to the first slot after now, in one step.
+		missed := now.Sub(at) / every
+		next = at.Add((missed + 1) * every)
 	}
-	// Jump straight to the first slot after now, in one step.
-	missed := now.Sub(at) / every
-	return at.Add((missed + 1) * every).UTC()
+	return next.UTC()
 }
 
 // start runs one fire, tracking its depth for the whole turn so any
