@@ -5,10 +5,21 @@
 // !model, !new, !stop, !help).
 //
 // The user-facing surface is deliberately small: !help, !status,
-// !model [filter|id], !new, !stop, !login [provider|cancel]. Older
-// spellings (!models, !relay, !bot, !cancel-login, !whoami, !reset)
-// still work as undocumented aliases so nothing a user has learned
-// ever breaks.
+// !model [filter|id], !new, !stop, !schedules, !unschedule <id>,
+// !login [provider|cancel]. Older spellings (!models, !relay, !bot,
+// !cancel-login, !whoami, !reset) still work as undocumented aliases
+// so nothing a user has learned ever breaks.
+//
+// # Two front ends, one implementation
+//
+// The same session controls are reachable two ways: the `!command` a
+// human types, and the self-hosted MCP tools an agent calls mid-turn
+// (acp-kit/relaytool). Both go through the exported ACTIONS in
+// actions.go — Status, ModelList, SelectModel, NewSession, Post,
+// Schedule, ScheduleList, Unschedule. The `!` handlers are renderers
+// over those actions and nothing more. Do not add a command that talks
+// to the Controller directly: that is how the two surfaces drift, which
+// is the exact failure this package was created to fix.
 //
 // # What lives here and what does not
 //
@@ -378,6 +389,12 @@ func (b *Broker) isSessionBody(body string) bool {
 		return true
 	case body == "new" || body == "reset":
 		return true
+	case body == "schedules" || body == "schedule":
+		_, ok := b.scheduler()
+		return ok
+	case strings.HasPrefix(body, "unschedule"):
+		_, ok := b.scheduler()
+		return ok
 	}
 	return false
 }
@@ -465,6 +482,10 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		return b.model(convID, strings.TrimSpace(strings.TrimPrefix(body, "model"))), nil
 	case body == "new" || body == "reset":
 		return b.reset(convID), nil
+	case body == "schedules" || body == "schedule":
+		return b.schedules(convID), nil
+	case strings.HasPrefix(body, "unschedule"):
+		return b.unschedule(convID, strings.TrimSpace(strings.TrimPrefix(body, "unschedule"))), nil
 	case body == "stop":
 		return b.stop(convID), nil
 	default:
@@ -511,6 +532,10 @@ func (b *Broker) help() *Outcome {
 		if _, ok := b.stopper(); ok {
 			sb.WriteString("- `" + s + "stop` — interrupt the turn currently running\n")
 		}
+		if _, ok := b.scheduler(); ok {
+			sb.WriteString("- `" + s + "schedules` — list the prompts the agent has armed here\n")
+			sb.WriteString("- `" + s + "unschedule <id>` — cancel one of them\n")
+		}
 	}
 	sb.WriteString("- `" + s + "login [provider|cancel]` — connect a provider (e.g. `" + s +
 		"login anthropic`), or abort a login in progress\n")
@@ -527,59 +552,12 @@ func (b *Broker) help() *Outcome {
 	return &Outcome{Text: sb.String()}
 }
 
-// status renders one compact snapshot of everything the user might ask
-// about: the conversation's model / thinking / session (the old !status)
-// plus the relay process's version / uptime / sessions (the old !relay).
-// Rendered as a short bullet list — it has to read well on a phone, so
-// no tables and no wide lines; conversation state first, relay after.
+// status is the chat front end onto the Status action. Every session
+// command in this file is this thin: the implementation lives in
+// actions.go so the MCP front end (acp-kit/relaytool) runs the same
+// code, and the only thing that differs is how the answer is delivered.
 func (b *Broker) status(convID string) *Outcome {
-	if b.ctrl == nil {
-		return &Outcome{Text: "Session control is unavailable."}
-	}
-	st := b.ctrl.StatusFor(convID)
-	ri := b.ctrl.RelayInfo(convID)
-	var sb strings.Builder
-	sb.WriteString("**Status**\n\n")
-	if st.Where != "" {
-		fmt.Fprintf(&sb, "- here: %s\n", st.Where)
-	}
-	fmt.Fprintf(&sb, "- model: `%s`", st.EffectiveModel)
-	if st.OverrideModel != "" {
-		fmt.Fprintf(&sb, " (set via %smodel)", DisplaySigil)
-	}
-	sb.WriteString("\n")
-	if st.Thinking != "" {
-		fmt.Fprintf(&sb, "- thinking: %s\n", st.Thinking)
-	}
-	sess := "none yet (fresh on next message)"
-	if st.HasSession {
-		sess = "active"
-	}
-	if ri.SessionID != "" {
-		sess += " `" + ri.SessionID + "`"
-	}
-	fmt.Fprintf(&sb, "- session: %s\n", sess)
-	if st.ConvID != "" {
-		fmt.Fprintf(&sb, "- conversation: `%s`\n", st.ConvID)
-	}
-	if st.StateDir != "" {
-		fmt.Fprintf(&sb, "- state dir: `%s`\n", st.StateDir)
-	}
-	if st.TurnRunning {
-		fmt.Fprintf(&sb, "- turn running: yes — `%sstop` interrupts it\n", DisplaySigil)
-	}
-	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
-	if ri.Version != "" {
-		fmt.Fprintf(&sb, "- relay: `%s`\n", ri.Version)
-	}
-	if ri.Uptime != "" {
-		fmt.Fprintf(&sb, "- uptime: %s\n", ri.Uptime)
-	}
-	if ri.AgentCmd != "" {
-		fmt.Fprintf(&sb, "- agent: `%s`\n", ri.AgentCmd)
-	}
-	fmt.Fprintf(&sb, "- active conversations: %d\n", ri.ActiveSessions)
-	return &Outcome{Text: sb.String()}
+	return textOr(b.Status(convID))
 }
 
 // modelsListCap bounds how many models a model listing prints in one
@@ -590,43 +568,26 @@ const modelsListCap = 40
 // It backs bare `!model`, `!model <filter>` and the undocumented
 // `!models [filter]` alias.
 func (b *Broker) models(filter string) *Outcome {
-	if b.ctrl == nil {
-		return &Outcome{Text: "Session control is unavailable."}
+	return textOr(b.ModelList(filter))
+}
+
+// textOr renders an action's (text, error) as an Outcome, turning the
+// no-Controller error into the prose users have always seen.
+func textOr(text string, err error) *Outcome {
+	if err != nil {
+		return &Outcome{Text: capitalise(err.Error()) + "."}
 	}
-	all, current := b.ctrl.AvailableModels()
-	if len(all) == 0 {
-		return &Outcome{Text: fmt.Sprintf("No models available — connect a provider with `%slogin`.", DisplaySigil)}
+	return &Outcome{Text: text}
+}
+
+// capitalise upper-cases the first byte of an error string so it reads
+// as a sentence in chat. Error strings are lower-case by Go convention
+// and ASCII by ours, so a byte is the right unit.
+func capitalise(s string) string {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return s
 	}
-	f := strings.ToLower(filter)
-	matched := make([]client.ModelInfo, 0, len(all))
-	for _, m := range all {
-		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {
-			matched = append(matched, m)
-		}
-	}
-	var sb strings.Builder
-	if filter == "" {
-		fmt.Fprintf(&sb, "%d models available (current: `%s`). `%smodel <id>` to switch, `%smodel <filter>` to narrow:\n\n",
-			len(all), current, DisplaySigil, DisplaySigil)
-	} else {
-		fmt.Fprintf(&sb, "%d model(s) match %q (current: `%s`):\n\n", len(matched), filter, current)
-	}
-	if len(matched) == 0 {
-		fmt.Fprintf(&sb, "(none match %q — try `%smodel` for the full list)\n", filter, DisplaySigil)
-		return &Outcome{Text: sb.String()}
-	}
-	for i, m := range matched {
-		if i >= modelsListCap {
-			fmt.Fprintf(&sb, "…and %d more (filter to narrow).\n", len(matched)-modelsListCap)
-			break
-		}
-		marker := ""
-		if m.ID == current {
-			marker = " ←"
-		}
-		fmt.Fprintf(&sb, "- `%s`%s\n", m.ID, marker)
-	}
-	return &Outcome{Text: sb.String()}
+	return string(s[0]-'a'+'A') + s[1:]
 }
 
 // model implements `!model [filter|id]`:
@@ -657,7 +618,7 @@ func (b *Broker) model(convID, arg string) *Outcome {
 
 // setModel switches the sticky model for the conversation.
 func (b *Broker) setModel(convID, id string) *Outcome {
-	if err := b.ctrl.SetModelOverride(convID, id); err != nil {
+	if err := b.SelectModel(convID, id); err != nil {
 		return &Outcome{Text: fmt.Sprintf("❌ %v. Use `%smodel` to see available ids.", err, DisplaySigil)}
 	}
 	return &Outcome{Text: fmt.Sprintf("✅ Model set to `%s` for this chat — applies from your next message.", id)}
@@ -665,13 +626,27 @@ func (b *Broker) setModel(convID, id string) *Outcome {
 
 // reset drops the conversation's live session so the next turn is fresh.
 func (b *Broker) reset(convID string) *Outcome {
-	if b.ctrl == nil {
-		return &Outcome{Text: "Session control is unavailable."}
-	}
-	if err := b.ctrl.ResetSession(convID); err != nil {
+	if err := b.NewSession(convID); err != nil {
 		return &Outcome{Text: fmt.Sprintf("Couldn't reset: %v.", err)}
 	}
 	return &Outcome{Text: "🧹 Fresh session — previous context cleared. Your model choice is kept."}
+}
+
+// schedules lists what is armed for the conversation.
+func (b *Broker) schedules(convID string) *Outcome {
+	items, err := b.ScheduleList(convID)
+	if err != nil {
+		return &Outcome{Text: capitalise(err.Error()) + "."}
+	}
+	return &Outcome{Text: RenderSchedules(items)}
+}
+
+// unschedule disarms one of the conversation's schedules.
+func (b *Broker) unschedule(convID, id string) *Outcome {
+	if err := b.Unschedule(convID, id); err != nil {
+		return &Outcome{Text: fmt.Sprintf("❌ %v.", err)}
+	}
+	return &Outcome{Text: fmt.Sprintf("🗑️ Cancelled `%s`.", id)}
 }
 
 // stop interrupts the turn currently running for the conversation.

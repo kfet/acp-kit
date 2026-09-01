@@ -8,6 +8,53 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- **`relaytool`: the agent→relay loopback.** Exposes a relay's own bot
+  interface to the ACP agent as self-hosted MCP tools, so the agent can drive
+  the relay from inside a turn. ACP has no agent-initiated message and a
+  relay's streaming sink is bound per turn, but an MCP tool call runs
+  agent→client — so the loopback is the correct mechanism and needs no
+  protocol extension. Tools: `status`, `list_models`, `set_model`,
+  `new_session`, and (capability-gated) `post`, `schedule`, `list_schedules`,
+  `unschedule`.
+- **`schedule`: durable, conversation-scoped scheduled prompts.** A prompt
+  armed here re-enters the conversation it was created in — same conv, same
+  session, full history — and its answer streams back through the relay's
+  ordinary path. Host cron cannot do that, which is the whole reason this
+  exists; host chores stay in host cron. Runaway control is first-class and on
+  by default: `MaxDepth` bounds a schedule→turn→schedule chain (so every chain
+  terminates), `MaxPerConv` / `MaxTotal` bound breadth, `MinInterval` floors a
+  repeat, and a missed window is skipped rather than replayed.
+- `command.Poster` and `command.Scheduler`: optional `Controller`
+  capabilities, in the same shape as `TurnStopper`. A relay that answers one
+  HTTP request per turn (poe-acp) cannot speak out of band, so it implements
+  neither and the corresponding tools are never advertised.
+- `command`: `!schedules` and `!unschedule <id>`, so a human can see and kill
+  what the agent has armed. Registered only when the `Controller` implements
+  `Scheduler`.
+- `command`: the session controls are now exported **actions** — `Status`,
+  `ModelList`, `SelectModel`, `NewSession`, `Post`, `Schedule`,
+  `ScheduleList`, `Unschedule` — and the `!` handlers are thin renderers over
+  them. This is what lets the chat surface and the MCP surface be one
+  implementation with two front ends rather than two implementations that
+  drift.
+
+### Notes on what is deliberately absent
+
+- **No `stop` tool.** An agent cancelling its own in-flight turn either does
+  nothing or kills the very turn whose tool call asked for it, leaving the
+  result undeliverable. There is no coherent reading, so there is no tool.
+- **`new_session` is deferred**, not immediate: resetting a session cancels
+  the turn in flight, which is the same foot-gun. The tool records the intent
+  and the relay applies it via `Tools.EndTurn` once the turn is over — same
+  `Controller`, same implementation, honest timing.
+- **`post` has no target parameter.** The conversation comes from the
+  mcphost session key, bound server-side from the connection token. An agent
+  that could post into arbitrary channels would be a realm-wide megaphone for
+  anything that can prompt-inject it, so in v1 that is not a config toggle —
+  it is not expressible.
+
 ## [0.8.0] - 2026-09-01
 
 ### Added
