@@ -29,6 +29,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `statusline` — wire contract for the `dev.acp-kit.status-line/v1` ACP extension: mood/plan payload that agents emit on `session/update._meta`, plus provider-emoji and short-model-name derivation, so relays can render a compact `🏛️ opus-4.5 • steady • 2/5` status line.
 - `terminal` — agent-side ACP terminal driver: foreground exec with timeout, a bounded pool of background commands, and leak cleanup, over a narrow `Conn` interface.
 - `sysprompt` — compose base relay prompt, operator extra text, and skill catalogs.
+- `remotefs` — make relay-side paths (session cwd, staged prompt files) exist on the host where the agent actually runs, for relays whose agent is reached over ssh. `Local` is the no-op for a local agent.
 - `paths` — XDG state/config path helpers.
 - `log` — opt-in debug logging.
 
@@ -63,5 +64,6 @@ turn and has nothing to speak on afterwards — and gets the read/steer subset.
   - otherwise it is exposed once through `TakePendingSystemPrompt`, and re-armed after resume.
 - `skills.LoadBuiltin` requires an app-specific prefix so different relays do not collide in `$TMPDIR`.
 - `attachments.Store` writes through `os.Root`; hostile filenames cannot escape the per-message directory.
+- `remotefs` exists because an agent command line is opaque and the ACP handshake never reports the agent's host: remoteness must be operator configuration. A remote agent that receives a nonexistent `cwd` does not fail — it falls back to `$HOME` — so provisioning failures must be surfaced loudly by the caller rather than fallen through.
 - `mcphost` binds a tool call's session key **server-side from the connection token**. `relaytool` therefore never accepts a conversation as a tool argument — every loopback tool acts on the conversation the call came from, and only that one. Do not add a `target` parameter without a threat model.
 - A loopback tool must never destroy the turn that is calling it. That is why `relaytool` exposes no `stop`, and why `new_session` is deferred to `Tools.EndTurn`.

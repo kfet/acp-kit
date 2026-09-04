@@ -8,6 +8,25 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-04
+
+### Added
+
+- `remotefs`: provision relay-side paths on the host where the ACP agent
+  actually runs. A relay that spawns its agent over ssh
+  (`--agent-cmd "ssh -T box fir --mode acp"`) hands the agent absolute
+  paths — the session cwd and any staged prompt files — that exist only
+  on the relay's own disk; the agent takes `cwd` as-is with no stat and
+  no mkdir, so it silently falls back to `$HOME` and every staged file is
+  missing, with nothing anywhere reporting an error. `remotefs.New(host)`
+  returns a `Provisioner` whose `Mkdir` and `Push` make those paths real
+  over there first; `remotefs.Local` is the no-op for a local agent and
+  the correct value when no remote is configured. ssh runs in BatchMode
+  with a bounded timeout, is invoked as argv (no local shell), and quotes
+  every path crossing the remote login shell. `Push` streams a tar over
+  ssh rather than using scp, whose remote-path handling changed with
+  OpenSSH 9 such that no single quoting discipline is correct for both.
+
 ## [0.10.0] - 2026-09-02
 
 ### Added
