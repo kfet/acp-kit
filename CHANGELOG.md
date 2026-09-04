@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-09-04
+
+### Fixed
+
+- `remotefs`: doc comments named exported fields (`SSH.Timeout`,
+  `SSH.TransferTimeout`) that do not exist, and described `Local` as
+  three no-ops when `Fetch` is the identity.
+
 ## [0.12.2] - 2026-09-04
 
 ### Fixed

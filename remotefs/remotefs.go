@@ -32,14 +32,14 @@ import (
 	"time"
 )
 
-// DefaultTimeout bounds a single provisioning operation when SSH.Timeout
-// is zero. Provisioning sits in front of session creation and prompt
+// DefaultTimeout bounds a single control operation (Mkdir) unless
+// WithTimeout says otherwise. Provisioning sits in front of session creation and prompt
 // dispatch, so it must fail fast rather than hang a conversation on an
 // unreachable box.
 const DefaultTimeout = 30 * time.Second
 
-// DefaultTransferTimeout bounds Push and Fetch when SSH.TransferTimeout
-// is zero. Copying an attachment is not a control operation: a hundred
+// DefaultTransferTimeout bounds Push and Fetch unless
+// WithTransferTimeout says otherwise. Copying an attachment is not a control operation: a hundred
 // megabytes over a domestic uplink is minutes, and holding it to the
 // same deadline as a mkdir would fail perfectly healthy transfers.
 const DefaultTransferTimeout = 5 * time.Minute
@@ -82,8 +82,9 @@ type Provisioner interface {
 }
 
 // Local is the Provisioner for an agent running on this machine: the
-// relay's own filesystem is the agent's filesystem, so both operations
-// are no-ops. It is the correct zero value for "no remote configured".
+// relay's own filesystem is the agent's filesystem, so Mkdir and Push
+// do nothing and Fetch is the identity. It is the correct value for
+// "no remote configured".
 var Local Provisioner = local{}
 
 type local struct{}
