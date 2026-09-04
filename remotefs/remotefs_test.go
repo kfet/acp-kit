@@ -601,3 +601,74 @@ func TestFetchCleansPath(t *testing.T) {
 		t.Errorf("local = %q", local)
 	}
 }
+
+// TestPushTimeoutNamesTheTransferBound: a transfer is bounded by the
+// transfer deadline, and the error must say so rather than quoting the
+// control-operation one.
+func TestPushTimeoutNamesTheTransferBound(t *testing.T) {
+	src := pushSrc(t)
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, map[string]string{"ssh": "sleep 30\n"})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New("miki")
+	perr := s.WithTransferTimeout(50*time.Millisecond).Push(t.Context(), src, "/dst")
+	if perr == nil {
+		t.Fatal("want error")
+	}
+	if !strings.Contains(perr.Error(), "timed out after 50ms") {
+		t.Errorf("error %q does not name the transfer bound", perr)
+	}
+}
+
+// TestPushSSHStartFailsWithLargeSource is the regression for the start-
+// failure branch holding the pipe open: with ssh missing, tar fills the
+// pipe buffer and Push must still return at once.
+func TestPushSSHStartFailsWithLargeSource(t *testing.T) {
+	src := pushSrcBig(t)
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, nil) // no ssh
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New("miki")
+	done := make(chan error, 1)
+	go func() { done <- s.WithTransferTimeout(time.Minute).Push(t.Context(), src, "/dst") }()
+	select {
+	case perr := <-done:
+		if perr == nil {
+			t.Fatal("want error")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Push blocked: the start-failure branch held the pipe open")
+	}
+}
+
+// TestFetchLocalTarStartFailsWithLargeSource is its mirror image.
+func TestFetchLocalTarStartFailsWithLargeSource(t *testing.T) {
+	stubDir(t, map[string]string{
+		// A remote that produces more than one pipe buffer of output.
+		"ssh": "head -c 4194304 /dev/zero\n",
+	}) // no tar
+	s, _ := New("miki")
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.WithTransferTimeout(time.Minute).Fetch(t.Context(), "/x", t.TempDir())
+		done <- err
+	}()
+	select {
+	case ferr := <-done:
+		if ferr == nil || !strings.Contains(ferr.Error(), "local tar") {
+			t.Fatalf("err = %v", ferr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Fetch blocked: the start-failure branch held the pipe open")
+	}
+}

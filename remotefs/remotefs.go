@@ -193,7 +193,7 @@ func (s *SSH) Mkdir(ctx context.Context, dir string) error {
 	var stderr strings.Builder
 	cmd.Stderr = limitWriter(&stderr, maxStderr)
 	if err := cmd.Run(); err != nil {
-		return s.opErr(ctx, "mkdir "+dir, err, stderr.String())
+		return s.opErr(ctx, s.timeout, "mkdir "+dir, err, stderr.String())
 	}
 	return nil
 }
@@ -230,11 +230,16 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 	sshCmd.WaitDelay = waitDelay
 
 	if err := tarCmd.Start(); err != nil {
-		return s.opErr(ctx, "push "+src+" (local tar)", err, tarErrBuf.String())
+		return s.opErr(ctx, s.xfer, "push "+src+" (local tar)", err, tarErrBuf.String())
 	}
 	if err := sshCmd.Start(); err != nil {
+		// Drop the read end BEFORE waiting: tar is already writing, and
+		// with this process still holding the pipe it would block on a
+		// full buffer until the transfer deadline instead of taking an
+		// immediate EPIPE.
+		rd.Close()
 		_ = tarCmd.Wait()
-		return s.opErr(ctx, "push "+src, err, sshErrBuf.String())
+		return s.opErr(ctx, s.xfer, "push "+src, err, sshErrBuf.String())
 	}
 	// ssh holds the read end now; drop ours so tar sees EPIPE the
 	// moment ssh exits, instead of writing into a pipe kept alive by
@@ -250,10 +255,10 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 	// the REMOTE tar fail on a truncated archive — so when both spoke,
 	// both are quoted.
 	if sshErr != nil {
-		return s.opErr(ctx, "push "+src, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
+		return s.opErr(ctx, s.xfer, "push "+src, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
 	}
 	if tarErr != nil {
-		return s.opErr(ctx, "push "+src+" (local tar)", tarErr, tarErrBuf.String())
+		return s.opErr(ctx, s.xfer, "push "+src+" (local tar)", tarErr, tarErrBuf.String())
 	}
 	return nil
 }
@@ -283,11 +288,14 @@ func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, err
 	tarCmd.WaitDelay = waitDelay
 
 	if err := sshCmd.Start(); err != nil {
-		return "", s.opErr(ctx, "fetch "+remotePath, err, sshErrBuf.String())
+		return "", s.opErr(ctx, s.xfer, "fetch "+remotePath, err, sshErrBuf.String())
 	}
 	if err := tarCmd.Start(); err != nil {
+		// Same reason as Push: release the pipe so ssh is not left
+		// blocked writing into it.
+		rd.Close()
 		_ = sshCmd.Wait()
-		return "", s.opErr(ctx, "fetch "+remotePath+" (local tar)", err, tarErrBuf.String())
+		return "", s.opErr(ctx, s.xfer, "fetch "+remotePath+" (local tar)", err, tarErrBuf.String())
 	}
 	rd.Close()
 
@@ -298,10 +306,10 @@ func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, err
 	// symptom of the remote side having failed — but if the local tar
 	// also had something to say, say it.
 	if sshErr != nil {
-		return "", s.opErr(ctx, "fetch "+remotePath, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
+		return "", s.opErr(ctx, s.xfer, "fetch "+remotePath, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
 	}
 	if tarErr != nil {
-		return "", s.opErr(ctx, "fetch "+remotePath+" (local tar)", tarErr, tarErrBuf.String())
+		return "", s.opErr(ctx, s.xfer, "fetch "+remotePath+" (local tar)", tarErr, tarErrBuf.String())
 	}
 	return filepath.Join(dstDir, filepath.Base(remotePath)), nil
 }
@@ -310,9 +318,9 @@ func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, err
 // and whatever the command said on stderr — the difference between
 // "wrong key" and "wrong hostname" is the whole diagnosis, and the relay
 // surfaces this text to the user.
-func (s *SSH) opErr(ctx context.Context, op string, err error, stderr string) error {
+func (s *SSH) opErr(ctx context.Context, bound time.Duration, op string, err error, stderr string) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		err = fmt.Errorf("%w (timed out after %s)", err, s.timeout)
+		err = fmt.Errorf("%w (timed out after %s)", err, bound)
 	}
 	if msg := strings.TrimSpace(stderr); msg != "" {
 		return fmt.Errorf("remotefs: %s on %s: %w: %s", op, s.host, err, msg)

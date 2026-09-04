@@ -8,6 +8,17 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-09-04
+
+### Fixed
+
+- `remotefs`: a timed-out transfer named the control-operation deadline
+  ("timed out after 30s") instead of its own.
+- `remotefs`: when the second process fails to start, the pipe's read end
+  is released before waiting on the first. The writer was left blocking
+  on a full pipe buffer until the transfer deadline instead of taking an
+  immediate EPIPE — invisible for a small payload, minutes for a real one.
+
 ## [0.12.1] - 2026-09-04
 
 ### Fixed
