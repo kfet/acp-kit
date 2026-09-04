@@ -38,6 +38,12 @@ import (
 // unreachable box.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultTransferTimeout bounds Push and Fetch when SSH.TransferTimeout
+// is zero. Copying an attachment is not a control operation: a hundred
+// megabytes over a domestic uplink is minutes, and holding it to the
+// same deadline as a mkdir would fail perfectly healthy transfers.
+const DefaultTransferTimeout = 5 * time.Minute
+
 // maxStderr caps how much of a failed command's stderr is quoted back in
 // the error. ssh says what matters in its first line ("Permission denied
 // (publickey)", "Could not resolve hostname"); the rest is banner noise.
@@ -106,6 +112,7 @@ func (local) Fetch(_ context.Context, remotePath, _ string) (string, error) {
 type SSH struct {
 	host    string
 	timeout time.Duration
+	xfer    time.Duration
 }
 
 // hostOK matches ssh destinations we are willing to pass to ssh(1): a
@@ -138,16 +145,26 @@ func New(host string) (*SSH, error) {
 	if !hostOK(host) {
 		return nil, fmt.Errorf("%w: %q", ErrBadHost, host)
 	}
-	return &SSH{host: host, timeout: DefaultTimeout}, nil
+	return &SSH{host: host, timeout: DefaultTimeout, xfer: DefaultTransferTimeout}, nil
 }
 
-// WithTimeout returns a copy of s bounding each operation by d. A
-// non-positive d selects DefaultTimeout.
+// WithTimeout returns a copy of s bounding each control operation
+// (Mkdir) by d. A non-positive d selects DefaultTimeout.
 func (s *SSH) WithTimeout(d time.Duration) *SSH {
 	if d <= 0 {
 		d = DefaultTimeout
 	}
-	return &SSH{host: s.host, timeout: d}
+	return &SSH{host: s.host, timeout: d, xfer: s.xfer}
+}
+
+// WithTransferTimeout returns a copy of s bounding each byte-moving
+// operation (Push, Fetch) by d. A non-positive d selects
+// DefaultTransferTimeout.
+func (s *SSH) WithTransferTimeout(d time.Duration) *SSH {
+	if d <= 0 {
+		d = DefaultTransferTimeout
+	}
+	return &SSH{host: s.host, timeout: s.timeout, xfer: d}
 }
 
 // Host reports the ssh destination, for logs and error messages.
@@ -183,7 +200,7 @@ func (s *SSH) Mkdir(ctx context.Context, dir string) error {
 
 // Push streams src as a tar archive into dstParent on the agent's host.
 func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.xfer)
 	defer cancel()
 
 	remote := "mkdir -p -- " + ShellQuote(dstParent) +
@@ -228,9 +245,12 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 	tarErr := tarCmd.Wait()
 
 	// ssh first when both failed: a dead ssh gives tar an EPIPE that
-	// says nothing, while ssh's own stderr names the actual cause.
+	// says nothing, while ssh's own stderr names the actual cause. The
+	// converse also happens — a local tar that dies mid-stream makes
+	// the REMOTE tar fail on a truncated archive — so when both spoke,
+	// both are quoted.
 	if sshErr != nil {
-		return s.opErr(ctx, "push "+src, sshErr, sshErrBuf.String())
+		return s.opErr(ctx, "push "+src, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
 	}
 	if tarErr != nil {
 		return s.opErr(ctx, "push "+src+" (local tar)", tarErr, tarErrBuf.String())
@@ -241,10 +261,14 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 // Fetch copies remotePath from the agent's host into dstDir and returns
 // the local path, dstDir/<basename(remotePath)>.
 func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	remotePath = filepath.Clean(remotePath)
+	ctx, cancel := context.WithTimeout(ctx, s.xfer)
 	defer cancel()
 
-	remote := "tar -c -f - -C " + ShellQuote(filepath.Dir(remotePath)) +
+	// -h: the agent may well have written through a symlink, and a link
+	// entry would extract here as a dangling one pointing into a
+	// filesystem this machine does not have.
+	remote := "tar -c -h -f - -C " + ShellQuote(filepath.Dir(remotePath)) +
 		" -- " + ShellQuote(filepath.Base(remotePath))
 	sshCmd := exec.CommandContext(ctx, "ssh", s.sshArgv(remote)...)
 	tarCmd := exec.CommandContext(ctx, "tar", "-x", "-f", "-", "-C", dstDir)
@@ -271,9 +295,10 @@ func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, err
 	sshErr := sshCmd.Wait()
 
 	// ssh first again: local tar failing on a truncated stream is a
-	// symptom of the remote side having failed.
+	// symptom of the remote side having failed — but if the local tar
+	// also had something to say, say it.
 	if sshErr != nil {
-		return "", s.opErr(ctx, "fetch "+remotePath, sshErr, sshErrBuf.String())
+		return "", s.opErr(ctx, "fetch "+remotePath, sshErr, withLocal(sshErrBuf.String(), tarErrBuf.String()))
 	}
 	if tarErr != nil {
 		return "", s.opErr(ctx, "fetch "+remotePath+" (local tar)", tarErr, tarErrBuf.String())
@@ -293,6 +318,17 @@ func (s *SSH) opErr(ctx context.Context, op string, err error, stderr string) er
 		return fmt.Errorf("remotefs: %s on %s: %w: %s", op, s.host, err, msg)
 	}
 	return fmt.Errorf("remotefs: %s on %s: %w", op, s.host, err)
+}
+
+// withLocal appends the local tar's complaint to the remote's, so a
+// failure caused on THIS side is not reported purely in the far side's
+// words ("this does not look like a tar archive").
+func withLocal(remote, local string) string {
+	local = strings.TrimSpace(local)
+	if local == "" {
+		return remote
+	}
+	return strings.TrimSpace(remote) + " (local tar: " + local + ")"
 }
 
 // ShellQuote wraps s in single quotes for a POSIX remote login shell,

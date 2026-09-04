@@ -419,7 +419,7 @@ eval "$7"
 		t.Fatalf("content = %q err=%v", b, rerr)
 	}
 	argv := readLines(t, filepath.Join(dir, "ssh.argv"))
-	want := `tar -c -f - -C ` + ShellQuote(filepath.Dir(remote)) + ` -- 'out.txt'`
+	want := `tar -c -h -f - -C ` + ShellQuote(filepath.Dir(remote)) + ` -- 'out.txt'`
 	if argv[len(argv)-1] != want {
 		t.Errorf("remote command = %q, want %q", argv[len(argv)-1], want)
 	}
@@ -441,8 +441,9 @@ func TestFetchRemoteFails(t *testing.T) {
 	if ferr == nil || !strings.Contains(ferr.Error(), "tar: no such file") {
 		t.Fatalf("err = %v", ferr)
 	}
-	if strings.Contains(ferr.Error(), "local tar") {
-		t.Errorf("remote failure must win: %v", ferr)
+	// The remote's own words lead; the local tar is a parenthetical.
+	if strings.Contains(ferr.Error(), "(local tar)") {
+		t.Errorf("remote failure must own the error: %v", ferr)
 	}
 }
 
@@ -472,5 +473,131 @@ func TestFetchLocalTarFails(t *testing.T) {
 	_, err := s.Fetch(t.Context(), "/x", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "tar: bad archive") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWithTransferTimeout(t *testing.T) {
+	s, err := New("miki")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.xfer != DefaultTransferTimeout {
+		t.Errorf("xfer = %v, want %v", s.xfer, DefaultTransferTimeout)
+	}
+	if got := s.WithTransferTimeout(time.Second).xfer; got != time.Second {
+		t.Errorf("xfer = %v, want 1s", got)
+	}
+	if got := s.WithTransferTimeout(0).xfer; got != DefaultTransferTimeout {
+		t.Errorf("xfer = %v, want default", got)
+	}
+	// The two bounds are independent.
+	if got := s.WithTimeout(time.Second); got.xfer != DefaultTransferTimeout {
+		t.Errorf("WithTimeout clobbered the transfer bound: %v", got.xfer)
+	}
+	if got := s.WithTransferTimeout(time.Second); got.timeout != DefaultTimeout {
+		t.Errorf("WithTransferTimeout clobbered the control bound: %v", got.timeout)
+	}
+}
+
+// TestPushBothFailQuotesLocalTar: a local tar that dies mid-stream makes
+// the remote tar fail on a truncated archive. Reporting only the remote
+// blames the wrong machine.
+func TestPushBothFailQuotesLocalTar(t *testing.T) {
+	src := pushSrc(t)
+	stubDir(t, map[string]string{
+		"ssh": "cat > /dev/null\necho 'tar: unexpected EOF' >&2\nexit 2\n",
+		"tar": "echo 'tar: cannot stat src' >&2\nexit 2\n",
+	})
+	s, _ := New("miki")
+	err := s.Push(t.Context(), src, "/dst")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, want := range []string{"tar: unexpected EOF", "local tar: tar: cannot stat src"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestFetchBothFailQuotesLocalTar(t *testing.T) {
+	stubDir(t, map[string]string{
+		"ssh": "echo 'tar: no such file' >&2\nexit 2\n",
+		"tar": "cat > /dev/null\necho 'tar: empty archive' >&2\nexit 2\n",
+	})
+	s, _ := New("miki")
+	_, err := s.Fetch(t.Context(), "/gone/x.txt", t.TempDir())
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, want := range []string{"tar: no such file", "local tar: tar: empty archive"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestFetchFollowsSymlinks: the agent may have written through a link;
+// a link entry would extract here as a dangling one.
+func TestFetchFollowsSymlinks(t *testing.T) {
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, map[string]string{
+		"ssh": "eval \"$7\"\n",
+	})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	remoteDir := t.TempDir()
+	target := filepath.Join(remoteDir, "real.txt")
+	if err := os.WriteFile(target, []byte("linked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(remoteDir, "out.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := New("miki")
+	// A trailing slash must not confuse Dir/Base either.
+	local, ferr := s.Fetch(t.Context(), link, t.TempDir())
+	if ferr != nil {
+		t.Fatalf("Fetch: %v", ferr)
+	}
+	fi, lerr := os.Lstat(local)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("fetched a symlink; want its contents")
+	}
+	b, _ := os.ReadFile(local)
+	if string(b) != "linked" {
+		t.Errorf("content = %q, want %q", b, "linked")
+	}
+}
+
+func TestFetchCleansPath(t *testing.T) {
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, map[string]string{"ssh": "eval \"$7\"\n"})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	remoteDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remoteDir, "out.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New("miki")
+	local, ferr := s.Fetch(t.Context(), remoteDir+"/./out.txt", t.TempDir())
+	if ferr != nil {
+		t.Fatalf("Fetch: %v", ferr)
+	}
+	if filepath.Base(local) != "out.txt" {
+		t.Errorf("local = %q", local)
 	}
 }

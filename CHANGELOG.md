@@ -8,6 +8,22 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-04
+
+### Fixed
+
+- `remotefs`: a transfer no longer shares a `mkdir`'s deadline — `Push`
+  and `Fetch` are bounded by `DefaultTransferTimeout` (5m, settable with
+  `WithTransferTimeout`), because a hundred megabytes over a domestic
+  uplink is minutes and 30s was failing healthy copies.
+- `remotefs`: when both ends fail, the local tar is quoted alongside the
+  remote's message. A local tar dying mid-stream makes the REMOTE one
+  fail on a truncated archive, and reporting only the far side blamed
+  the wrong machine.
+- `remotefs.Fetch`: follows symlinks on the remote (`tar -h`) — an agent
+  that wrote through a link produced a dangling one here — and cleans
+  the path before splitting it.
+
 ## [0.12.0] - 2026-09-04
 
 ### Added
