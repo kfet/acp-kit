@@ -62,6 +62,17 @@ type Provisioner interface {
 	// it lands at dstParent/<basename(src)>, creating dstParent first.
 	// Existing files at the destination are overwritten.
 	Push(ctx context.Context, src, dstParent string) error
+
+	// Fetch makes a path on the agent's host readable HERE and returns
+	// the local path to read. It is the direction the agent produces
+	// in: a file the agent wrote (an attachment it wants delivered)
+	// lives on its disk, not the relay's.
+	//
+	// dstDir is a caller-owned scratch directory to copy into; the
+	// caller removes it. A local agent copies nothing and returns
+	// remotePath unchanged, so callers must always use the returned
+	// path and never assume dstDir was touched.
+	Fetch(ctx context.Context, remotePath, dstDir string) (string, error)
 }
 
 // Local is the Provisioner for an agent running on this machine: the
@@ -73,6 +84,11 @@ type local struct{}
 
 func (local) Mkdir(context.Context, string) error        { return nil }
 func (local) Push(context.Context, string, string) error { return nil }
+
+// Fetch on a local agent is the identity: the file is already here.
+func (local) Fetch(_ context.Context, remotePath, _ string) (string, error) {
+	return remotePath, nil
+}
 
 // SSH provisions over ssh(1), driving tar(1) on both ends for Push.
 //
@@ -97,7 +113,7 @@ type SSH struct {
 // not to validate reachability but to reject a "host" that ssh would
 // read as an option — `-oProxyCommand=...` is arbitrary local execution
 // — and to reject whitespace, which would split into extra argv.
-var hostOK = func(s string) bool {
+func hostOK(s string) bool {
 	if s == "" || strings.HasPrefix(s, "-") {
 		return false
 	}
@@ -174,42 +190,95 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 		" && tar -x -f - -C " + ShellQuote(dstParent)
 
 	// -C parent <base>: the archive holds one top-level entry named
-	// base, so extraction under dstParent lands it at
-	// dstParent/base — the documented Push contract — regardless of
-	// how deep src is locally.
+	// base, so extraction under dstParent lands it at dstParent/base —
+	// the documented Push contract — regardless of how deep src is
+	// locally.
 	tarCmd := exec.CommandContext(ctx, "tar", "-c", "-f", "-",
 		"-C", filepath.Dir(src), filepath.Base(src))
 	sshCmd := exec.CommandContext(ctx, "ssh", s.sshArgv(remote)...)
-	tarCmd.WaitDelay = waitDelay
-	sshCmd.WaitDelay = waitDelay
 
-	pr, pw := io.Pipe()
-	tarCmd.Stdout = pw
-	sshCmd.Stdin = pr
+	// The two processes are joined by an OS pipe, not an io.Pipe: ssh
+	// must be able to die early — refused mkdir, auth failure after the
+	// banner — and have that reach tar as EPIPE. An io.Pipe would leave
+	// os/exec's copier goroutine blocked forever on a write no one will
+	// read, and WaitDelay cannot break it because the block is in the
+	// io.Pipe, not in a file descriptor.
+	rd := mustPipe(tarCmd.StdoutPipe())
+	sshCmd.Stdin = rd
 
 	var tarErrBuf, sshErrBuf strings.Builder
 	tarCmd.Stderr = limitWriter(&tarErrBuf, maxStderr)
 	sshCmd.Stderr = limitWriter(&sshErrBuf, maxStderr)
+	tarCmd.WaitDelay = waitDelay
+	sshCmd.WaitDelay = waitDelay
 
+	if err := tarCmd.Start(); err != nil {
+		return s.opErr(ctx, "push "+src+" (local tar)", err, tarErrBuf.String())
+	}
 	if err := sshCmd.Start(); err != nil {
-		pr.Close()
-		pw.Close()
+		_ = tarCmd.Wait()
 		return s.opErr(ctx, "push "+src, err, sshErrBuf.String())
 	}
-	tarErr := tarCmd.Run()
-	// Closing the write end is what lets the remote tar see EOF and
-	// exit; on a local tar failure it also unblocks ssh's stdin read.
-	pw.Close()
-	sshErr := sshCmd.Wait()
-	pr.Close()
+	// ssh holds the read end now; drop ours so tar sees EPIPE the
+	// moment ssh exits, instead of writing into a pipe kept alive by
+	// this process.
+	rd.Close()
 
-	if tarErr != nil {
-		return s.opErr(ctx, "push "+src+" (local tar)", tarErr, tarErrBuf.String())
-	}
+	sshErr := sshCmd.Wait()
+	tarErr := tarCmd.Wait()
+
+	// ssh first when both failed: a dead ssh gives tar an EPIPE that
+	// says nothing, while ssh's own stderr names the actual cause.
 	if sshErr != nil {
 		return s.opErr(ctx, "push "+src, sshErr, sshErrBuf.String())
 	}
+	if tarErr != nil {
+		return s.opErr(ctx, "push "+src+" (local tar)", tarErr, tarErrBuf.String())
+	}
 	return nil
+}
+
+// Fetch copies remotePath from the agent's host into dstDir and returns
+// the local path, dstDir/<basename(remotePath)>.
+func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	remote := "tar -c -f - -C " + ShellQuote(filepath.Dir(remotePath)) +
+		" -- " + ShellQuote(filepath.Base(remotePath))
+	sshCmd := exec.CommandContext(ctx, "ssh", s.sshArgv(remote)...)
+	tarCmd := exec.CommandContext(ctx, "tar", "-x", "-f", "-", "-C", dstDir)
+
+	rd := mustPipe(sshCmd.StdoutPipe())
+	tarCmd.Stdin = rd
+
+	var sshErrBuf, tarErrBuf strings.Builder
+	sshCmd.Stderr = limitWriter(&sshErrBuf, maxStderr)
+	tarCmd.Stderr = limitWriter(&tarErrBuf, maxStderr)
+	sshCmd.WaitDelay = waitDelay
+	tarCmd.WaitDelay = waitDelay
+
+	if err := sshCmd.Start(); err != nil {
+		return "", s.opErr(ctx, "fetch "+remotePath, err, sshErrBuf.String())
+	}
+	if err := tarCmd.Start(); err != nil {
+		_ = sshCmd.Wait()
+		return "", s.opErr(ctx, "fetch "+remotePath+" (local tar)", err, tarErrBuf.String())
+	}
+	rd.Close()
+
+	tarErr := tarCmd.Wait()
+	sshErr := sshCmd.Wait()
+
+	// ssh first again: local tar failing on a truncated stream is a
+	// symptom of the remote side having failed.
+	if sshErr != nil {
+		return "", s.opErr(ctx, "fetch "+remotePath, sshErr, sshErrBuf.String())
+	}
+	if tarErr != nil {
+		return "", s.opErr(ctx, "fetch "+remotePath+" (local tar)", tarErr, tarErrBuf.String())
+	}
+	return filepath.Join(dstDir, filepath.Base(remotePath)), nil
 }
 
 // opErr renders a failed operation with the host, the underlying error
@@ -217,7 +286,7 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 // "wrong key" and "wrong hostname" is the whole diagnosis, and the relay
 // surfaces this text to the user.
 func (s *SSH) opErr(ctx context.Context, op string, err error, stderr string) error {
-	if ctx.Err() != nil {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("%w (timed out after %s)", err, s.timeout)
 	}
 	if msg := strings.TrimSpace(stderr); msg != "" {

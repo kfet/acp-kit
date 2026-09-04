@@ -8,7 +8,7 @@ once it leaves v0.
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-09-04
+## [0.12.0] - 2026-09-04
 
 ### Added
 
@@ -26,6 +26,9 @@ once it leaves v0.
   every path crossing the remote login shell. `Push` streams a tar over
   ssh rather than using scp, whose remote-path handling changed with
   OpenSSH 9 such that no single quoting discipline is correct for both.
+  `Fetch` is the other direction — a file the AGENT produced, on its
+  disk, made readable here — because an agent that writes an attachment
+  for the relay to upload writes it over there.
 
 ## [0.10.0] - 2026-09-02
 

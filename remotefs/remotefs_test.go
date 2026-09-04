@@ -309,3 +309,168 @@ func TestCappedWriter(t *testing.T) {
 }
 
 var _ Provisioner = (*SSH)(nil)
+
+// TestPushRemoteExitsWithoutReading is the regression for the pipe
+// deadlock: ssh dies before draining stdin, so the local tar must see
+// EPIPE and the whole Push must return rather than block forever on a
+// write nobody will read.
+func TestPushRemoteExitsWithoutReading(t *testing.T) {
+	src := pushSrcBig(t)
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, map[string]string{
+		"ssh": "echo 'mkdir: Read-only file system' >&2\nexit 1\n",
+	})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New("miki")
+	// A generous per-op timeout: if this test only passes because the
+	// deadline fired, the deadlock is still there.
+	done := make(chan error, 1)
+	go func() { done <- s.WithTimeout(time.Minute).Push(t.Context(), src, "/dst") }()
+	select {
+	case perr := <-done:
+		if perr == nil {
+			t.Fatal("want error")
+		}
+		if !strings.Contains(perr.Error(), "Read-only file system") {
+			t.Errorf("err = %v, want the remote's own stderr", perr)
+		}
+		if strings.Contains(perr.Error(), "local tar") {
+			t.Errorf("err = %v, want ssh's failure to win over tar's EPIPE", perr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Push blocked: the tar->ssh pipe deadlocked")
+	}
+}
+
+// pushSrcBig makes a source big enough that tar cannot finish writing
+// into the pipe buffer before ssh exits.
+func pushSrcBig(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	src := filepath.Join(base, "msg-1")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blob := make([]byte, 4<<20)
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return src
+}
+
+func TestPushLocalTarStartFails(t *testing.T) {
+	src := pushSrc(t)
+	stubDir(t, map[string]string{"ssh": recordSSH}) // no tar
+	s, _ := New("miki")
+	err := s.Push(t.Context(), src, "/dst")
+	if err == nil || !strings.Contains(err.Error(), "local tar") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLocalFetchIsIdentity(t *testing.T) {
+	stubDir(t, nil)
+	got, err := Local.Fetch(t.Context(), "/on/agent/f.txt", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/on/agent/f.txt" {
+		t.Errorf("Fetch = %q, want the path unchanged", got)
+	}
+}
+
+func TestFetchCopiesBack(t *testing.T) {
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	// The stub ssh runs the remote command locally, which is exactly
+	// what a `tar -c` on the far side would produce.
+	dir := stubDir(t, map[string]string{
+		"ssh": `: > "$0.argv"
+for a in "$@"; do printf '%s\n' "$a" >> "$0.argv"; done
+eval "$7"
+`,
+	})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	remote := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(remote, []byte("delivered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	s, _ := New("miki")
+	local, ferr := s.Fetch(t.Context(), remote, dst)
+	if ferr != nil {
+		t.Fatalf("Fetch: %v", ferr)
+	}
+	if want := filepath.Join(dst, "out.txt"); local != want {
+		t.Fatalf("Fetch = %q, want %q", local, want)
+	}
+	b, rerr := os.ReadFile(local)
+	if rerr != nil || string(b) != "delivered" {
+		t.Fatalf("content = %q err=%v", b, rerr)
+	}
+	argv := readLines(t, filepath.Join(dir, "ssh.argv"))
+	want := `tar -c -f - -C ` + ShellQuote(filepath.Dir(remote)) + ` -- 'out.txt'`
+	if argv[len(argv)-1] != want {
+		t.Errorf("remote command = %q, want %q", argv[len(argv)-1], want)
+	}
+}
+
+func TestFetchRemoteFails(t *testing.T) {
+	realTar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skipf("tar not available: %v", err)
+	}
+	dir := stubDir(t, map[string]string{
+		"ssh": "echo 'tar: no such file' >&2\nexit 2\n",
+	})
+	if err := os.Symlink(realTar, filepath.Join(dir, "tar")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := New("miki")
+	_, ferr := s.Fetch(t.Context(), "/gone/x.txt", t.TempDir())
+	if ferr == nil || !strings.Contains(ferr.Error(), "tar: no such file") {
+		t.Fatalf("err = %v", ferr)
+	}
+	if strings.Contains(ferr.Error(), "local tar") {
+		t.Errorf("remote failure must win: %v", ferr)
+	}
+}
+
+func TestFetchSSHStartFails(t *testing.T) {
+	stubDir(t, map[string]string{"tar": "exit 0\n"}) // no ssh
+	s, _ := New("miki")
+	if _, err := s.Fetch(t.Context(), "/x", t.TempDir()); err == nil {
+		t.Fatal("want error when ssh is not on PATH")
+	}
+}
+
+func TestFetchLocalTarStartFails(t *testing.T) {
+	stubDir(t, map[string]string{"ssh": "exit 0\n"}) // no tar
+	s, _ := New("miki")
+	_, err := s.Fetch(t.Context(), "/x", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "local tar") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFetchLocalTarFails(t *testing.T) {
+	stubDir(t, map[string]string{
+		"ssh": "exit 0\n",
+		"tar": "cat > /dev/null\necho 'tar: bad archive' >&2\nexit 2\n",
+	})
+	s, _ := New("miki")
+	_, err := s.Fetch(t.Context(), "/x", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "tar: bad archive") {
+		t.Fatalf("err = %v", err)
+	}
+}
