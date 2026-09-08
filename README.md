@@ -17,7 +17,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 
 ## Packages
 
-- `client` — stdio ACP child process client: initialize, sessions, prompts, caps, model selection, auth hooks, fs callbacks.
+- `client` — stdio ACP child process client: initialize, sessions, prompts, caps, model selection, auth hooks, fs callbacks. Includes two `SessionUpdateSink` decorators: `ValidatingSink` (hold the visible message until it passes validation) and `TurnLiveness` (bound a turn by agent progress rather than wall-clock).
 - `client/auth` — small schema for ACP auth method/result metadata.
 - `state` — conversation-key to ACP-session manager: stable cwd allocation, best-effort resume, idle GC, system-prompt fallback regime.
 - `attachments` — cwd-local attachment sandbox plus ACP `ResourceLink` / embedded text resource blocks.

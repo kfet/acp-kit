@@ -8,6 +8,27 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `client.StartTurnLiveness` / `client.TurnLiveness`: bound a prompt turn
+  by PROGRESS instead of wall-clock. `Wrap` decorates the session's
+  `SessionUpdateSink`; agent message/thought chunks and
+  `tool_call` / `tool_call_update` reset a no-progress clock, everything
+  else (plans, available commands, mode changes — the frames a wedged
+  agent's harness keeps emitting) does not. The returned context is
+  cancelled with cause `ErrNoProgress`, or `ErrTurnCeiling` for the
+  OPT-IN, off-by-default absolute cap `MaxTurnDuration`; the returned stop
+  func cancels with a plain `context.Canceled`, so a relay can tell a
+  wedged turn from a superseded one and say so.
+
+  This replaces the plain `context.WithTimeout(parent, 10m)` every relay
+  had. A wall-clock cap punishes exactly the turns working hardest: a
+  zulip-acp turn was killed at 10m00s while its agent was mid-tool-call,
+  and the tool went on writing files a minute after the relay gave up.
+  The classifier is exported as `client.IsProgress` so consumers do not
+  reimplement it. Named for the condition it detects, NOT "idle" —
+  `state.Config.IdleTimeout` is session GC and unrelated.
+
 ## [0.15.0] - 2026-09-08
 
 ### Added
