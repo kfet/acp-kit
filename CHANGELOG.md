@@ -8,6 +8,49 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-08
+
+### Fixed
+
+- `mcphost`: an agent silently lost **every** loopback tool for the rest of its
+  session whenever the consumer re-execed itself in place. Observed live: a
+  relay self-updated mid-session and the agent's `mcp__relay__*` calls returned
+  "tool not found" from then on, so a promise it had made to schedule a
+  follow-up had no mechanism behind it. Four independent causes, all fixed:
+  the socket path was a fresh `MkdirTemp` on every process start; `Close`
+  unlinked the socket and removed its directory; tokens were minted in memory,
+  so the successor rejected the token the agent's redirector already held; and
+  the redirector was a one-shot pipe that exited when the socket went away.
+- `mcphost`: `Close` no longer hangs. Closing the listener left accepted
+  connections open, and an attached redirector holds its connection open
+  indefinitely, so `wg.Wait` never returned. Shutdown now drops live
+  connections.
+
+### Added
+
+- `mcphost.Config.Dir` pins the socket to a caller-supplied fixed directory
+  instead of a fresh `MkdirTemp` one. The directory is created if missing and
+  tightened to 0700, and is never removed by `Close`.
+- `mcphost.Host.ExportTokens` / `SeedTokens` carry the sessionKey→token
+  registry across an exec as an opaque env-safe blob. Environment only —
+  deliberately never disk, which would create a new secret at rest.
+- `mcphost.Host.CloseForExec` shuts down without unlinking the socket, for the
+  reload path; `Close` remains the real-shutdown path and cleans up.
+- The redirector is now a thin **reconnecting** proxy: it redials on a 50ms→2s
+  schedule, gives up after ~30s and then exits (so the agent sees a dead server
+  rather than a hung one), and **replays `initialize`** on each new connection
+  because the host's MCP state is per-connection. A request in flight when the
+  connection dropped is failed back with a JSON-RPC error rather than replayed,
+  so a `tools/call` side effect is never duplicated. The agent sees exactly one
+  answer per request id: a response the proxy is no longer waiting for — the
+  host answered, then died before the write side noticed — is dropped rather
+  than delivered alongside the error already sent for that id.
+- `mcphost.Listen` refuses to bind over a socket a live process is still
+  serving, while still clearing a genuinely stale one.
+
+All of the above is additive: consumers that do not set `Config.Dir` are
+unaffected.
+
 ## [0.12.3] - 2026-09-04
 
 ### Fixed
