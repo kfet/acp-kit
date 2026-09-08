@@ -8,6 +8,21 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-08
+
+### Added
+
+- `skills.LoadBuiltinIn`: extract an embedded bundle into a directory the
+  APP owns instead of `$TMPDIR`. A relay hands the agent absolute skill
+  paths and promises they are stable for the session; a relay that
+  re-execs itself in place on a self-update broke that promise, because
+  the extraction root was keyed to the process's temp directory — and
+  nothing ever removed the old roots, so they accumulated one per
+  released version (784 leaked directories on one live host). When a base
+  is supplied, stale generations of the same app are garbage collected,
+  in the new location and in the legacy `$TMPDIR` one. `LoadBuiltin` is
+  unchanged for callers that pass nothing.
+
 ## [0.13.0] - 2026-09-08
 
 ### Fixed

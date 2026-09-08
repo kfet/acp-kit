@@ -9,7 +9,9 @@ import (
 	stdlog "log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -21,8 +23,43 @@ var (
 	osWriteFile = os.WriteFile
 	osReadFile  = os.ReadFile
 	osReadDir   = os.ReadDir
+	osRemoveAll = os.RemoveAll
+	osStat      = os.Stat
 	filepathAbs = filepath.Abs
 )
+
+// genDirRe matches one extraction generation: <appPrefix>-<hash prefix>.
+// Built per call because appPrefix is the caller's.
+func genDirRe(appPrefix string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(appPrefix) + `-[0-9a-f]{` + strconv.Itoa(hashPrefixLen) + `}$`)
+}
+
+// pruneGenerations removes this app's extraction directories under dir,
+// except keep. It is deliberately timid: a candidate must match the exact
+// <appPrefix>-<12 hex> shape AND contain a "skills" subdirectory, so a
+// directory that merely shares the prefix is never touched. Everything it
+// can go wrong on is logged and ignored — this is disk hygiene, not
+// correctness.
+func pruneGenerations(dir, appPrefix, keep string) {
+	entries, err := osReadDir(dir)
+	if err != nil {
+		stdlog.Printf("skills: cannot scan %s for old skill extractions: %v", dir, err)
+		return
+	}
+	re := genDirRe(appPrefix)
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == keep || !re.MatchString(e.Name()) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if _, err := osStat(filepath.Join(p, "skills")); err != nil {
+			continue
+		}
+		if err := osRemoveAll(p); err != nil {
+			stdlog.Printf("skills: cannot remove the stale skill extraction %s: %v", p, err)
+		}
+	}
+}
 
 // Skill is one entry in a fir-style skills catalog.
 type Skill struct {
@@ -38,7 +75,33 @@ type Skill struct {
 //
 // appPrefix must be non-empty and app-specific (for example "poe-acp") so two
 // relays with different embedded bundles never collide in the same tmp dir.
+//
+// $TMPDIR is a poor home for something a system prompt promises is stable, and
+// nothing ever removes the directories: prefer LoadBuiltinIn with a directory
+// the app owns.
 func LoadBuiltin(bundle fs.FS, appPrefix string) ([]Skill, error) {
+	return LoadBuiltinIn("", bundle, appPrefix)
+}
+
+// LoadBuiltinIn is LoadBuiltin with the extraction root chosen by the caller:
+// skills land in <base>/<appPrefix>-<contentHash>/skills.
+//
+// Pass a directory the app OWNS and that outlives a process — a state dir, not
+// $TMPDIR. A relay hands the agent absolute skill paths in its system prompt
+// and promises they are stable for the session; a relay that re-execs itself in
+// place (a self-update) breaks that promise if the paths were under a temp
+// directory keyed to the process, and leaves the old ones behind forever. base
+// == "" keeps the legacy $TMPDIR behaviour for callers that have nowhere better.
+//
+// When base is given, LoadBuiltinIn also GARBAGE COLLECTS: sibling
+// <appPrefix>-<hash> directories in base that are not this bundle's are
+// removed, as are legacy extractions of the same app under $TMPDIR. Both are
+// this app's own leftovers from a previous binary — this process is the only
+// live owner, since a re-exec keeps the PID and takes the agent with it — and
+// without this the directories accumulate one per released version, forever.
+// A removal that fails is logged and otherwise ignored: it costs disk, not
+// correctness.
+func LoadBuiltinIn(base string, bundle fs.FS, appPrefix string) ([]Skill, error) {
 	appPrefix = strings.TrimSpace(appPrefix)
 	if appPrefix == "" {
 		return nil, fmt.Errorf("skills: empty appPrefix")
@@ -47,7 +110,19 @@ func LoadBuiltin(bundle fs.FS, appPrefix string) ([]Skill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hash bundle: %w", err)
 	}
-	root := filepath.Join(os.TempDir(), appPrefix+"-"+hash[:hashPrefixLen], "skills")
+	dirName := appPrefix + "-" + hash[:hashPrefixLen]
+	if base == "" {
+		base = os.TempDir()
+	} else {
+		if err := osMkdirAll(base, 0o755); err != nil {
+			return nil, fmt.Errorf("skills: create %s: %w", base, err)
+		}
+		defer func() {
+			pruneGenerations(base, appPrefix, dirName)
+			pruneGenerations(os.TempDir(), appPrefix, "")
+		}()
+	}
+	root := filepath.Join(base, dirName, "skills")
 
 	var skills []Skill
 	err = fs.WalkDir(bundle, "bundle", func(p string, d fs.DirEntry, walkErr error) error {

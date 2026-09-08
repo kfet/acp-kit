@@ -42,6 +42,88 @@ func TestLoadBuiltinExtractsAndCachesAndFallsBack(t *testing.T) {
 	}
 }
 
+// TestLoadBuiltinInIsStableAndCollectsGarbage pins the reason
+// LoadBuiltinIn exists. A relay promises the agent that skill paths are
+// absolute and stable for the session, then re-execs itself in place on a
+// self-update; with the extraction under $TMPDIR the promise was false and
+// every released version left a directory behind forever.
+func TestLoadBuiltinInIsStableAndCollectsGarbage(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp) // os.TempDir() reads it per call
+	base := filepath.Join(t.TempDir(), "state", "skills")
+
+	// Leftovers from earlier generations: one in the state dir, one in
+	// the legacy $TMPDIR location, both this app's own.
+	old := filepath.Join(base, "acp-kit-gc-000000000000", "skills", "x")
+	legacy := filepath.Join(tmp, "acp-kit-gc-111111111111", "skills", "x")
+	// Same-shaped names that are NOT ours: no skills/ inside, or not the
+	// generation shape at all. Both must survive.
+	bystander := filepath.Join(base, "acp-kit-gc-222222222222", "docs")
+	unrelated := filepath.Join(base, "acp-kit-gc-notahashatall", "skills")
+	for _, d := range []string{old, legacy, bystander, unrelated} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := LoadBuiltinIn(base, goodBundle(), "acp-kit-gc")
+	if err != nil {
+		t.Fatalf("LoadBuiltinIn: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got = %#v", got)
+	}
+	if !strings.HasPrefix(got[0].Path, base+string(filepath.Separator)) {
+		t.Fatalf("skill path %q is not under the base dir %q", got[0].Path, base)
+	}
+
+	// Same bundle, same path — that IS the stability promise.
+	again, err := LoadBuiltinIn(base, goodBundle(), "acp-kit-gc")
+	if err != nil || again[0].Path != got[0].Path {
+		t.Fatalf("second call: %v, path %q -> %q", err, got[0].Path, again[0].Path)
+	}
+	body, err := os.ReadFile(got[0].Path)
+	if err != nil || !strings.Contains(string(body), "body") {
+		t.Fatalf("re-extraction is not idempotent: %v %q", err, body)
+	}
+
+	for _, gone := range []string{filepath.Dir(filepath.Dir(old)), filepath.Dir(filepath.Dir(legacy))} {
+		if _, err := os.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("stale generation %s survived: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{bystander, unrelated} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("%s must not be touched: %v", kept, err)
+		}
+	}
+}
+
+func TestLoadBuiltinInBaseMkdirError(t *testing.T) {
+	t.Cleanup(restoreSeams())
+	osMkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failed") }
+	if _, err := LoadBuiltinIn(filepath.Join(t.TempDir(), "nope"), goodBundle(), "acp-kit-basefail"); err == nil {
+		t.Fatal("expected the base mkdir error to propagate")
+	}
+}
+
+// TestPruneGenerationsSurvivesIOErrors: garbage collection is disk
+// hygiene, so nothing it can fail at may fail a load.
+func TestPruneGenerationsSurvivesIOErrors(t *testing.T) {
+	t.Cleanup(restoreSeams())
+	pruneGenerations(filepath.Join(t.TempDir(), "missing"), "acp-kit-gc", "") // ReadDir error path
+
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "acp-kit-gc-333333333333", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	osRemoveAll = func(string) error { return errors.New("remove failed") }
+	pruneGenerations(base, "acp-kit-gc", "")
+	if _, err := os.Stat(filepath.Join(base, "acp-kit-gc-333333333333")); err != nil {
+		t.Fatalf("a failed removal must leave the directory alone: %v", err)
+	}
+}
+
 func TestLoadBuiltinRequiresAppPrefix(t *testing.T) {
 	if _, err := LoadBuiltin(fstest.MapFS{}, ""); err == nil {
 		t.Fatal("expected error on empty prefix")
@@ -206,8 +288,10 @@ func TestParseFrontmatterEdges(t *testing.T) {
 
 func restoreSeams() func() {
 	m, w, r, d, a := osMkdirAll, osWriteFile, osReadFile, osReadDir, filepathAbs
+	rm, st := osRemoveAll, osStat
 	return func() {
 		osMkdirAll, osWriteFile, osReadFile, osReadDir, filepathAbs = m, w, r, d, a
+		osRemoveAll, osStat = rm, st
 	}
 }
 
