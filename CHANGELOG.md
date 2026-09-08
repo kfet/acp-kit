@@ -8,6 +8,18 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-09-09
+
+### Fixed
+
+- `client.AgentProc.Prompt` now sends `session/cancel` when its context
+  is cancelled. Abandoning the JSON-RPC request only stopped the CLIENT
+  waiting — the agent never heard about it and its in-flight tool kept
+  running. Measured in the wild: a relay gave up on a turn at 10m00s and
+  the agent went on writing files for another minute. Relays that
+  cancelled explicitly (on a superseding message) were unaffected; every
+  timeout path was not.
+
 ## [0.16.1] - 2026-09-09
 
 ### Changed

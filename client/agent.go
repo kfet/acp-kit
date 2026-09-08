@@ -646,16 +646,37 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 // Prompt sends a user message to the session. Returns the stop reason.
 // The prompt is a sequence of ACP content blocks; callers build these
 // from the latest user text plus any attachments.
+//
+// If ctx is cancelled, Prompt tells the agent so with a session/cancel
+// notification before returning. Abandoning the JSON-RPC request only
+// stops the CLIENT waiting: the agent never hears about it and its
+// in-flight tool keeps running. That was observed in the wild — a relay
+// gave up on a turn and the agent went on writing files for another
+// minute — so the notification is sent here, once, rather than left to
+// every caller to remember.
+//
+// It is best-effort and bounded: the notification is a single write to
+// the child's stdin, and a child wedged badly enough not to read it is
+// past helping. The prompt error is returned regardless.
 func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
 	resp, err := acp.SendRequest[acp.PromptResponse](a.conn, ctx, acp.AgentMethodSessionPrompt, acp.PromptRequest{
 		SessionId: sid,
 		Prompt:    prompt,
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			cctx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelNotifyTimeout)
+			_ = a.Cancel(cctx, sid)
+			stop()
+		}
 		return "", err
 	}
 	return resp.StopReason, nil
 }
+
+// cancelNotifyTimeout bounds the courtesy session/cancel Prompt sends
+// after its own context was cancelled. See Prompt.
+const cancelNotifyTimeout = 5 * time.Second
 
 // Cancel requests cancellation of an in-flight prompt for a session.
 func (a *AgentProc) Cancel(ctx context.Context, sid acp.SessionId) error {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -784,5 +785,75 @@ func TestAvailableCommandsSnapshot(t *testing.T) {
 	}
 	if got := a.AvailableCommands(); len(got) != 1 || got[0].Name != "only" {
 		t.Fatalf("snapshot not replaced: %+v", got)
+	}
+}
+
+// TestPromptCancelNotifiesAgent is the fix for the second half of the
+// wall-clock-timeout bug: abandoning the session/prompt request only
+// stops the CLIENT waiting. Unless session/cancel is sent, the agent
+// runs on — which is how a relay that gave up on a turn watched the
+// agent keep writing files a minute later.
+func TestPromptCancelNotifiesAgent(t *testing.T) {
+	cancelled := make(chan struct{})
+	hang := make(chan struct{})
+	defer close(hang)
+	pc := startPaired(t, Config{}, func(ctx context.Context, method string, params json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{"protocolVersion": acp.ProtocolVersionNumber}, nil
+		case acp.AgentMethodSessionPrompt:
+			// A tool that never finishes on its own.
+			select {
+			case <-hang:
+			case <-ctx.Done():
+			}
+			return map[string]any{"stopReason": "end_turn"}, nil
+		case acp.AgentMethodSessionCancel:
+			select {
+			case <-cancelled:
+			default:
+				close(cancelled)
+			}
+			return nil, nil
+		}
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	if _, err := pc.agent.Prompt(ctx, "sid", []acp.ContentBlock{acp.TextBlock("hi")}); err == nil {
+		t.Fatal("want the cancellation surfaced")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the agent was never told to cancel — its tool would run on")
+	}
+}
+
+// A prompt that fails for its OWN reasons, with a live context, must
+// not send a spurious session/cancel.
+func TestPromptErrorWithLiveCtxDoesNotCancel(t *testing.T) {
+	var cancels int32
+	pc := startPaired(t, Config{}, func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{"protocolVersion": acp.ProtocolVersionNumber}, nil
+		case acp.AgentMethodSessionPrompt:
+			return nil, &acp.RequestError{Code: -32603, Message: "nope"}
+		case acp.AgentMethodSessionCancel:
+			atomic.AddInt32(&cancels, 1)
+		}
+		return nil, nil
+	})
+	if _, err := pc.agent.Prompt(context.Background(), "sid", []acp.ContentBlock{acp.TextBlock("hi")}); err == nil {
+		t.Fatal("want the agent's error surfaced")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := atomic.LoadInt32(&cancels); n != 0 {
+		t.Fatalf("sent %d spurious session/cancel notifications", n)
 	}
 }
