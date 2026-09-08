@@ -629,3 +629,28 @@ func TestSaveRenameFailure(t *testing.T) {
 		t.Fatal("want rename error")
 	}
 }
+
+// TestDueSkipsFutureItem pins the "not yet" branch of due().
+//
+// Every other test reaches it only incidentally — whichever item a map
+// iteration happens to visit while another is already due — which made
+// the branch's coverage depend on map order, i.e. on nothing. A 100%
+// gate that fails once in ten runs teaches nobody anything, so the
+// branch is driven directly here: two items, exactly one of them due.
+func TestDueSkipsFutureItem(t *testing.T) {
+	h := newHarness(t, nil)
+	now, err := h.store.Add("conv-1", "now", epoch, 0)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := h.store.Add("conv-1", "later", epoch.Add(time.Hour), 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	claimed := h.store.due()
+	if len(claimed) != 1 || claimed[0].ID != now.ID {
+		t.Fatalf("due() = %#v, want only %s", claimed, now.ID)
+	}
+	if got := len(h.store.List("conv-1")); got != 1 {
+		t.Fatalf("after due(), %d items remain, want 1 (the future one)", got)
+	}
+}

@@ -8,6 +8,24 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-08
+
+### Added
+
+- `client.Caps.Image` and `client.Caps.Audio`: the ACP
+  `agentCapabilities.promptCapabilities.image` / `.audio` flags, parsed
+  at initialize alongside `embeddedContext`. A relay that ingests an
+  inbound attachment needs to know whether it may put an image in front
+  of the model as a `ContentBlock::Image` or must fall back to naming
+  the file on disk; without this the answer was unreachable and every
+  relay would have had to re-parse the initialize envelope itself.
+
+### Fixed
+
+- `schedule`: the "not yet due" branch of `Store.due` was covered only
+  by map-iteration luck, so the 100% coverage gate failed at random.
+  Driven deterministically now.
+
 ## [0.14.0] - 2026-09-08
 
 ### Added

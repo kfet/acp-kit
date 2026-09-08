@@ -48,7 +48,7 @@ func runFakeAgent() {
 				"agentCapabilities": map[string]any{
 					"loadSession":         true,
 					"sessionCapabilities": map[string]any{"list": map[string]any{}, "resume": map[string]any{}},
-					"promptCapabilities":  map[string]any{"embeddedContext": true},
+					"promptCapabilities":  map[string]any{"embeddedContext": true, "image": true, "audio": true},
 					"_meta":               map[string]any{"session.systemPrompt": map[string]any{"version": 1}},
 				},
 				"authMethods": []map[string]any{{"id": "noop", "name": "Noop"}},

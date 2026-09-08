@@ -64,6 +64,16 @@ type Caps struct {
 	// in prompt requests instead of a bare ResourceLink, avoiding an
 	// agent-side fetch.
 	EmbeddedContext bool
+	// Image reflects agentCapabilities.promptCapabilities.image: when
+	// true, the relay may include ContentBlock::Image (base64 data plus
+	// a mime type) in prompt requests, so an image a human attached
+	// reaches the model as an image rather than as a path it has to go
+	// and read. False is the ACP default, and the consumer must then
+	// fall back to naming the file.
+	Image bool
+	// Audio reflects agentCapabilities.promptCapabilities.audio, the
+	// same deal as Image for ContentBlock::Audio.
+	Audio bool
 	// SystemPrompt reflects agentCapabilities._meta["session.systemPrompt"].
 	// When true the consumer may pass a system-prompt block list via
 	// session/new._meta and the agent will treat it as durable across
@@ -368,6 +378,8 @@ func parseCaps(raw json.RawMessage) Caps {
 			} `json:"sessionCapabilities"`
 			PromptCapabilities struct {
 				EmbeddedContext bool `json:"embeddedContext"`
+				Image           bool `json:"image"`
+				Audio           bool `json:"audio"`
 			} `json:"promptCapabilities"`
 			Meta map[string]json.RawMessage `json:"_meta"`
 		} `json:"agentCapabilities"`
@@ -392,6 +404,8 @@ func parseCaps(raw json.RawMessage) Caps {
 		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
 		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+		Image:           env.AgentCapabilities.PromptCapabilities.Image,
+		Audio:           env.AgentCapabilities.PromptCapabilities.Audio,
 		SystemPrompt:    sysPrompt,
 		Extensions:      exts,
 	}

@@ -68,7 +68,7 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 						"list":   map[string]any{},
 						"resume": map[string]any{},
 					},
-					"promptCapabilities": map[string]any{"embeddedContext": true},
+					"promptCapabilities": map[string]any{"embeddedContext": true, "image": true, "audio": true},
 					"_meta": map[string]any{
 						"session.systemPrompt": map[string]any{"version": 1},
 					},
@@ -150,6 +150,12 @@ func TestPipeAndDispatch(t *testing.T) {
 	caps := a.Caps()
 	if !caps.SystemPrompt || !caps.ListSessions || !caps.ResumeSession || !caps.LoadSession || !caps.EmbeddedContext {
 		t.Fatalf("caps not parsed: %#v", caps)
+	}
+	// The content-type prompt capabilities decide whether a consumer
+	// may put an image (or audio) in front of the model at all, so
+	// they are asserted separately from the session ones.
+	if !caps.Image || !caps.Audio {
+		t.Fatalf("prompt content caps not parsed: %#v", caps)
 	}
 	if len(a.AuthMethods()) != 1 {
 		t.Fatal("expected one auth method")
@@ -476,7 +482,7 @@ func TestReadAndWriteTextFile(t *testing.T) {
 }
 
 func TestParseHelpersIgnoreGarbage(t *testing.T) {
-	if got := parseCaps(json.RawMessage("not-json")); got.LoadSession || got.ListSessions || got.ResumeSession || got.EmbeddedContext || got.SystemPrompt || got.Extensions != nil {
+	if got := parseCaps(json.RawMessage("not-json")); got.LoadSession || got.ListSessions || got.ResumeSession || got.EmbeddedContext || got.Image || got.Audio || got.SystemPrompt || got.Extensions != nil {
 		t.Fatalf("parseCaps garbage = %#v", got)
 	}
 	if got := parseAuthMethods(json.RawMessage("not-json")); got != nil {
