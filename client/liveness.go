@@ -95,11 +95,14 @@ func IsProgress(u acp.SessionUpdate) bool {
 type TurnLiveness struct {
 	window time.Duration
 
-	mu      sync.Mutex
-	timer   *time.Timer // no-progress timer; nil once stopped
-	ceiling *time.Timer // absolute ceiling timer; nil when disabled or stopped
-	cancel  context.CancelCauseFunc
-	done    bool
+	mu     sync.Mutex
+	timer  *time.Timer // no-progress timer
+	cancel context.CancelCauseFunc
+	done   bool
+
+	// stopCeiling releases the ceiling context. Never nil — it is
+	// context.CancelFunc(func(){}) when no ceiling is configured.
+	stopCeiling context.CancelFunc
 }
 
 // StartTurnLiveness begins watching a turn. It returns the watcher, a context
@@ -118,23 +121,31 @@ func StartTurnLiveness(parent context.Context, cfg TurnLivenessConfig) (*TurnLiv
 	if window <= 0 {
 		window = defaultNoProgressTimeout
 	}
-	ctx, cancel := context.WithCancelCause(parent)
-	l := &TurnLiveness{window: window, cancel: cancel}
-	// Armed under the lock: a timer short enough to fire during
+	// The ceiling is a plain deadline on an intermediate context rather
+	// than a second timer: it needs no reset, its cause propagates to
+	// the child, and — unlike a bare cancel — it makes the cap visible
+	// to anything downstream that asks ctx.Deadline().
+	base, stopCeiling := parent, context.CancelFunc(func() {})
+	if cfg.MaxTurnDuration > 0 {
+		base, stopCeiling = context.WithDeadlineCause(parent, time.Now().Add(cfg.MaxTurnDuration), ErrTurnCeiling)
+	}
+	ctx, cancel := context.WithCancelCause(base)
+	l := &TurnLiveness{window: window, cancel: cancel, stopCeiling: stopCeiling}
+	// Armed under the lock: a window short enough to fire during
 	// construction would otherwise race its own field assignment.
 	l.mu.Lock()
 	l.timer = time.AfterFunc(window, func() { l.fire(ErrNoProgress) })
-	if cfg.MaxTurnDuration > 0 {
-		l.ceiling = time.AfterFunc(cfg.MaxTurnDuration, func() { l.fire(ErrTurnCeiling) })
-	}
 	l.mu.Unlock()
 	return l, ctx, func() { l.fire(context.Canceled) }
 }
 
-// fire settles the turn exactly once: stop both timers, cancel with cause.
-// Later calls — a ceiling landing just after the stop func, a progress update
-// racing the no-progress timer — are no-ops, so the first cause reported wins
-// and a settled turn can never be resurrected.
+// fire settles the turn exactly once: stop the timer, cancel with cause,
+// release the ceiling context. Later calls — the caller's stop func after a
+// cut, a progress update racing the no-progress timer — are no-ops, so the
+// first cause reported wins and a settled turn can never be resurrected.
+//
+// Cancelling with a cause on a context whose PARENT already ended (the
+// ceiling deadline) is itself a no-op, so the ceiling's cause survives.
 func (l *TurnLiveness) fire(cause error) {
 	l.mu.Lock()
 	if l.done {
@@ -143,15 +154,14 @@ func (l *TurnLiveness) fire(cause error) {
 	}
 	l.done = true
 	l.timer.Stop()
-	if l.ceiling != nil {
-		l.ceiling.Stop()
-	}
 	l.mu.Unlock()
 	l.cancel(cause)
+	l.stopCeiling()
 }
 
 // progress restarts the no-progress window. It deliberately does not touch
-// the ceiling, and does nothing once the turn has settled — a stray update
+// the ceiling — that is an absolute cap, by definition unaffected by
+// progress — and does nothing once the turn has settled — a stray update
 // arriving after the cut must not re-arm a timer nobody will ever stop.
 func (l *TurnLiveness) progress() {
 	l.mu.Lock()

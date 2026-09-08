@@ -117,8 +117,8 @@ func TestTurnLiveness_CosmeticUpdateDoesNotReset(t *testing.T) {
 func TestTurnLiveness_CeilingOffByDefault(t *testing.T) {
 	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: 40 * time.Millisecond})
 	defer stop()
-	if live.ceiling != nil {
-		t.Fatal("MaxTurnDuration <=0 must arm no ceiling timer")
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("MaxTurnDuration <=0 must set no deadline")
 	}
 	sink := live.Wrap(&recordSink{})
 	// Keep making progress for far longer than any default ceiling would be.
@@ -144,8 +144,15 @@ func TestTurnLiveness_CeilingCutsDespiteProgress(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("a configured ceiling must be visible as a deadline")
+	}
 	if got := waitCause(t, ctx); !errors.Is(got, ErrTurnCeiling) {
 		t.Fatalf("cause = %v, want ErrTurnCeiling", got)
+	}
+	stop() // the ceiling's cause must survive a later stop
+	if got := context.Cause(ctx); !errors.Is(got, ErrTurnCeiling) {
+		t.Fatalf("cause after stop = %v, want ErrTurnCeiling", got)
 	}
 }
 

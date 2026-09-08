@@ -8,6 +8,15 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-09-09
+
+### Changed
+
+- `client.TurnLiveness`: the optional `MaxTurnDuration` ceiling is now a
+  real context deadline rather than a second timer. It needs no reset,
+  its cause still propagates, and — unlike a bare cancel — the cap is
+  visible to anything downstream that asks `ctx.Deadline()`.
+
 ## [0.16.0] - 2026-09-09
 
 ### Added
