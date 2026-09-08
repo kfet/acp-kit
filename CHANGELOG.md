@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-09
+
 ### Added
 
 - `client.StartTurnLiveness` / `client.TurnLiveness`: bound a prompt turn
