@@ -169,6 +169,48 @@ func TestTurnLiveness_StopIsPlainCanceled(t *testing.T) {
 	stop() // idempotent
 }
 
+// The no-progress timer can lose a race it should have won: it fires,
+// then progress lands before the callback takes the lock. A turn that
+// made progress inside the window must be given the remainder, not cut.
+func TestTurnLiveness_TimerLosingTheRaceDoesNotCut(t *testing.T) {
+	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: time.Hour})
+	defer stop()
+	// Exactly what the expired timer's callback does. lastProgress is
+	// within the window, so it must re-arm instead of settling.
+	live.fire(ErrNoProgress)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("a turn with recent progress was cut: %v", context.Cause(ctx))
+	}
+	live.mu.Lock()
+	done := live.done
+	live.mu.Unlock()
+	if done {
+		t.Fatal("the watcher settled despite recent progress")
+	}
+	// It still cuts once the window really has elapsed.
+	live.mu.Lock()
+	live.lastProgress = time.Now().Add(-2 * time.Hour)
+	live.mu.Unlock()
+	live.fire(ErrNoProgress)
+	if got := context.Cause(ctx); !errors.Is(got, ErrNoProgress) {
+		t.Fatalf("cause = %v, want ErrNoProgress", got)
+	}
+}
+
+// Under a window short enough that every update races the timer, a
+// stream of progress must still keep the turn alive.
+func TestTurnLiveness_TightRaceKeepsTurnAlive(t *testing.T) {
+	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: time.Millisecond})
+	defer stop()
+	sink := live.Wrap(&recordSink{})
+	for i := 0; i < 400; i++ {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("cut at iteration %d despite continuous progress: %v", i, context.Cause(ctx))
+		}
+		_ = sink.OnUpdate(context.Background(), note(acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{ToolCallId: "t1"}}))
+	}
+}
+
 func TestTurnLiveness_DefaultWindow(t *testing.T) {
 	live, _, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{})
 	defer stop()

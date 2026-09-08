@@ -95,10 +95,11 @@ func IsProgress(u acp.SessionUpdate) bool {
 type TurnLiveness struct {
 	window time.Duration
 
-	mu     sync.Mutex
-	timer  *time.Timer // no-progress timer
-	cancel context.CancelCauseFunc
-	done   bool
+	mu           sync.Mutex
+	timer        *time.Timer // no-progress timer
+	lastProgress time.Time
+	cancel       context.CancelCauseFunc
+	done         bool
 
 	// stopCeiling releases the ceiling context. Never nil — it is
 	// context.CancelFunc(func(){}) when no ceiling is configured.
@@ -130,7 +131,7 @@ func StartTurnLiveness(parent context.Context, cfg TurnLivenessConfig) (*TurnLiv
 		base, stopCeiling = context.WithDeadlineCause(parent, time.Now().Add(cfg.MaxTurnDuration), ErrTurnCeiling)
 	}
 	ctx, cancel := context.WithCancelCause(base)
-	l := &TurnLiveness{window: window, cancel: cancel, stopCeiling: stopCeiling}
+	l := &TurnLiveness{window: window, lastProgress: time.Now(), cancel: cancel, stopCeiling: stopCeiling}
 	// Armed under the lock: a window short enough to fire during
 	// construction would otherwise race its own field assignment.
 	l.mu.Lock()
@@ -144,6 +145,13 @@ func StartTurnLiveness(parent context.Context, cfg TurnLivenessConfig) (*TurnLiv
 // cut, a progress update racing the no-progress timer — are no-ops, so the
 // first cause reported wins and a settled turn can never be resurrected.
 //
+// The one case that must NOT settle is the no-progress timer losing a race
+// it should have won: the timer fires, and progress lands before the
+// callback takes the lock. Resetting the timer inside progress is not
+// enough — the callback is already running — so the deadline is re-checked
+// against lastProgress here, and a turn that made progress within the
+// window is given the remainder rather than reported as wedged.
+//
 // Cancelling with a cause on a context whose PARENT already ended (the
 // ceiling deadline) is itself a no-op, so the ceiling's cause survives.
 func (l *TurnLiveness) fire(cause error) {
@@ -151,6 +159,13 @@ func (l *TurnLiveness) fire(cause error) {
 	if l.done {
 		l.mu.Unlock()
 		return
+	}
+	if errors.Is(cause, ErrNoProgress) {
+		if left := l.window - time.Since(l.lastProgress); left > 0 {
+			l.timer.Reset(left)
+			l.mu.Unlock()
+			return
+		}
 	}
 	l.done = true
 	l.timer.Stop()
@@ -169,6 +184,7 @@ func (l *TurnLiveness) progress() {
 	if l.done {
 		return
 	}
+	l.lastProgress = time.Now()
 	l.timer.Reset(l.window)
 }
 

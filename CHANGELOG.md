@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-09-09
+
+### Fixed
+
+- `client.TurnLiveness`: the no-progress timer could lose a race it
+  should have won — it fires, then a progress update lands before the
+  callback takes the lock — and report a working turn as wedged.
+  Re-checked against the last progress instant, so such a turn is given
+  the remainder of its window instead of being cut.
+
 ## [0.16.2] - 2026-09-09
 
 ### Fixed
