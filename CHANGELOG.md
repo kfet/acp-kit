@@ -8,6 +8,29 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-09
+
+### Added
+
+- `client.TurnLiveness.Progress` is exported. `Wrap` is a per-TURN sink
+  decorator, which a relay whose ACP `SessionUpdateSink` is
+  session-lifetime has nowhere to install — poe-acp enqueues every
+  `session/update` onto one drain goroutine and attaches the per-turn
+  sink in-band. The kit already exported `IsProgress` so consumers could
+  classify updates themselves; it now exports the thing that rule is
+  meant to feed, so such a relay can use the watcher without making its
+  session sink mutable. `Wrap` calls the same method, so there is still
+  one implementation.
+
+- `client.TurnLivenessConfig.NoProgressCause` / `.TurnCeilingCause`
+  optionally replace the sentinels reported through `context.Cause`. The
+  layer that owns the timeouts is the only one that knows the NUMBERS,
+  and a relay that tells its user "no output for 2m0s" needs that
+  sentence on the cause rather than re-derived wherever it is rendered.
+  A replacement is honoured only if it still satisfies `errors.Is` on
+  the sentinel it replaces; otherwise it is ignored, so the cross-relay
+  classification promise cannot be broken by a custom cause.
+
 ## [0.16.3] - 2026-09-09
 
 ### Fixed

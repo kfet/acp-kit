@@ -256,3 +256,95 @@ func TestTurnLiveness_WrapPropagatesDownstreamError(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
 }
+
+// wedgeCause is the shape a relay is expected to use for a custom cause:
+// its own sentence, wrapping the kit's sentinel so cross-relay
+// classification still works.
+type wedgeCause struct{ window time.Duration }
+
+func (c wedgeCause) Error() string {
+	return "no output for " + c.window.String() + " — it looks wedged"
+}
+func (c wedgeCause) Unwrap() error { return ErrNoProgress }
+
+type ceilCause struct{}
+
+func (ceilCause) Error() string { return "this turn hit the relay's limit" }
+func (ceilCause) Unwrap() error { return ErrTurnCeiling }
+
+// TestTurnLiveness_CustomCauses proves a relay can carry its own
+// user-facing sentence on both cuts while errors.Is still identifies the
+// condition — the promise every relay's classifier depends on.
+func TestTurnLiveness_CustomCauses(t *testing.T) {
+	want := wedgeCause{window: 5 * time.Millisecond}
+	_, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{
+		NoProgressTimeout: 5 * time.Millisecond,
+		NoProgressCause:   want,
+	})
+	defer stop()
+	<-ctx.Done()
+	if got := context.Cause(ctx); got != error(want) {
+		t.Fatalf("cause = %v, want the custom cause", got)
+	}
+	if !errors.Is(context.Cause(ctx), ErrNoProgress) {
+		t.Fatal("a custom cause must still classify as ErrNoProgress")
+	}
+
+	_, cctx, cstop := StartTurnLiveness(context.Background(), TurnLivenessConfig{
+		NoProgressTimeout: time.Hour,
+		MaxTurnDuration:   5 * time.Millisecond,
+		TurnCeilingCause:  ceilCause{},
+	})
+	defer cstop()
+	<-cctx.Done()
+	if got := context.Cause(cctx); got != error(ceilCause{}) {
+		t.Fatalf("ceiling cause = %v, want the custom cause", got)
+	}
+	if !errors.Is(context.Cause(cctx), ErrTurnCeiling) {
+		t.Fatal("a custom ceiling cause must still classify as ErrTurnCeiling")
+	}
+}
+
+// TestTurnLiveness_MisWrappedCauseIsIgnored pins the guard: a cause that
+// does not wrap the sentinel it replaces would silently break every
+// relay's `errors.Is` classification, so it is dropped.
+func TestTurnLiveness_MisWrappedCauseIsIgnored(t *testing.T) {
+	rogue := errors.New("i am not a wedge")
+	_, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{
+		NoProgressTimeout: 5 * time.Millisecond,
+		NoProgressCause:   rogue,
+	})
+	defer stop()
+	<-ctx.Done()
+	if !errors.Is(context.Cause(ctx), ErrNoProgress) {
+		t.Fatalf("mis-wrapped cause was honoured: %v", context.Cause(ctx))
+	}
+
+	_, cctx, cstop := StartTurnLiveness(context.Background(), TurnLivenessConfig{
+		NoProgressTimeout: time.Hour,
+		MaxTurnDuration:   5 * time.Millisecond,
+		TurnCeilingCause:  rogue,
+	})
+	defer cstop()
+	<-cctx.Done()
+	if !errors.Is(context.Cause(cctx), ErrTurnCeiling) {
+		t.Fatalf("mis-wrapped ceiling cause was honoured: %v", context.Cause(cctx))
+	}
+}
+
+// TestTurnLiveness_ProgressWithoutWrap covers the exported watcher half
+// used by a relay that classifies updates itself (poe-acp): calling
+// Progress directly keeps a turn alive exactly as Wrap would.
+func TestTurnLiveness_ProgressWithoutWrap(t *testing.T) {
+	l, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{
+		NoProgressTimeout: 60 * time.Millisecond,
+	})
+	defer stop()
+	for i := 0; i < 5; i++ {
+		time.Sleep(20 * time.Millisecond)
+		l.Progress()
+		if ctx.Err() != nil {
+			t.Fatalf("turn cut despite direct Progress calls: %v", context.Cause(ctx))
+		}
+	}
+}

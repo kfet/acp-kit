@@ -58,6 +58,37 @@ type TurnLivenessConfig struct {
 	// hard upper bound. It is NOT the wedge guard — that is
 	// NoProgressTimeout's job.
 	MaxTurnDuration time.Duration
+
+	// NoProgressCause optionally replaces ErrNoProgress as the cause
+	// reported when the no-progress window expires, and TurnCeilingCause
+	// replaces ErrTurnCeiling for the ceiling. They exist because the
+	// layer that owns the timeouts is the only one that knows the
+	// NUMBERS, and a relay that wants to tell its user "no output for
+	// 2m0s" must be able to put that sentence on the cause rather than
+	// re-deriving it wherever the cause is rendered.
+	//
+	// A replacement is honoured only if it still satisfies
+	// errors.Is(cause, <the sentinel it replaces>) — otherwise it is
+	// IGNORED and the sentinel is used. The cross-relay promise is that
+	// `errors.Is(context.Cause(ctx), client.ErrNoProgress)` identifies a
+	// wedge cut everywhere; a custom sentence may ride along on top of
+	// that promise but may never break it. Wrap, do not replace:
+	//
+	//	func (c myCause) Unwrap() error { return client.ErrNoProgress }
+	//
+	// nil (the default) means the bare sentinel.
+	NoProgressCause  error
+	TurnCeilingCause error
+}
+
+// causeOr returns want if it wraps sentinel, else sentinel. See
+// TurnLivenessConfig.NoProgressCause for why a mis-wrapped cause is
+// dropped rather than honoured.
+func causeOr(want, sentinel error) error {
+	if want != nil && errors.Is(want, sentinel) {
+		return want
+	}
+	return sentinel
 }
 
 // IsProgress reports whether a session/update is evidence that the agent is
@@ -128,14 +159,16 @@ func StartTurnLiveness(parent context.Context, cfg TurnLivenessConfig) (*TurnLiv
 	// to anything downstream that asks ctx.Deadline().
 	base, stopCeiling := parent, context.CancelFunc(func() {})
 	if cfg.MaxTurnDuration > 0 {
-		base, stopCeiling = context.WithDeadlineCause(parent, time.Now().Add(cfg.MaxTurnDuration), ErrTurnCeiling)
+		base, stopCeiling = context.WithDeadlineCause(parent,
+			time.Now().Add(cfg.MaxTurnDuration), causeOr(cfg.TurnCeilingCause, ErrTurnCeiling))
 	}
 	ctx, cancel := context.WithCancelCause(base)
 	l := &TurnLiveness{window: window, lastProgress: time.Now(), cancel: cancel, stopCeiling: stopCeiling}
 	// Armed under the lock: a window short enough to fire during
 	// construction would otherwise race its own field assignment.
+	wedged := causeOr(cfg.NoProgressCause, ErrNoProgress)
 	l.mu.Lock()
-	l.timer = time.AfterFunc(window, func() { l.fire(ErrNoProgress) })
+	l.timer = time.AfterFunc(window, func() { l.fire(wedged) })
 	l.mu.Unlock()
 	return l, ctx, func() { l.fire(context.Canceled) }
 }
@@ -174,11 +207,24 @@ func (l *TurnLiveness) fire(cause error) {
 	l.stopCeiling()
 }
 
-// progress restarts the no-progress window. It deliberately does not touch
-// the ceiling — that is an absolute cap, by definition unaffected by
-// progress — and does nothing once the turn has settled — a stray update
-// arriving after the cut must not re-arm a timer nobody will ever stop.
-func (l *TurnLiveness) progress() {
+// Progress restarts the no-progress window: evidence that the agent is
+// doing work. Call it for — and ONLY for — updates that satisfy
+// IsProgress; a relay that resets this clock on bookkeeping frames
+// (plans, spinners, mode changes) can never detect a wedged agent, which
+// is the whole failure this construct exists to catch.
+//
+// Most consumers should install Wrap(sink) instead and never call this:
+// Wrap applies IsProgress for them. It is exported for relays whose ACP
+// sink is session-lifetime rather than per-turn — poe-acp enqueues every
+// session/update onto one drain goroutine and attaches the per-turn sink
+// in-band, so a per-turn decorator has nowhere to live; it classifies
+// with IsProgress in the drain and feeds the watcher directly.
+//
+// It deliberately does not touch the ceiling — that is an absolute cap,
+// by definition unaffected by progress — and does nothing once the turn
+// has settled: a stray update arriving after the cut must not re-arm a
+// timer nobody will ever stop.
+func (l *TurnLiveness) Progress() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.done {
@@ -189,7 +235,7 @@ func (l *TurnLiveness) progress() {
 }
 
 // Wrap returns a SessionUpdateSink that forwards every update to down and
-// resets the no-progress clock on those that count as progress. Install the
+// resets the no-progress clock (Progress) on those that count as progress. Install the
 // result as the session's sink for the duration of the turn.
 func (l *TurnLiveness) Wrap(down SessionUpdateSink) SessionUpdateSink {
 	return &livenessSink{live: l, down: down}
@@ -204,7 +250,7 @@ type livenessSink struct {
 // OnUpdate implements SessionUpdateSink.
 func (s *livenessSink) OnUpdate(ctx context.Context, n acp.SessionNotification) error {
 	if IsProgress(n.Update) {
-		s.live.progress()
+		s.live.Progress()
 	}
 	return s.down.OnUpdate(ctx, n)
 }
