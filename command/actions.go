@@ -176,6 +176,30 @@ func (b *Broker) Status(convID string) (string, error) {
 	return sb.String(), nil
 }
 
+// MatchModels selects the models a `!model <filter>` listing names, in
+// the order the agent reported them. An empty filter matches
+// everything; otherwise the match is a case-insensitive substring of
+// the model ID. The result is always a fresh slice, never an alias of
+// all.
+//
+// Exported because a relay may render the SAME selection onto a
+// surface this package cannot know about — zulip-acp narrows its
+// votable model poll with it (internal/handler/opts.go). If a relay
+// re-implemented the rule, the poll and this listing's prose would
+// disagree about what "opus" matches, and a user would be told two
+// different things about one filter. There is one matcher, here, and
+// ModelList itself uses it.
+func MatchModels(all []client.ModelInfo, filter string) []client.ModelInfo {
+	f := strings.ToLower(strings.TrimSpace(filter))
+	matched := make([]client.ModelInfo, 0, len(all))
+	for _, m := range all {
+		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {
+			matched = append(matched, m)
+		}
+	}
+	return matched
+}
+
 // ModelList renders the available model ids, optionally filtered by
 // substring.
 func (b *Broker) ModelList(filter string) (string, error) {
@@ -186,13 +210,7 @@ func (b *Broker) ModelList(filter string) (string, error) {
 	if len(all) == 0 {
 		return fmt.Sprintf("No models available — connect a provider with `%slogin`.", DisplaySigil), nil
 	}
-	f := strings.ToLower(filter)
-	matched := make([]client.ModelInfo, 0, len(all))
-	for _, m := range all {
-		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {
-			matched = append(matched, m)
-		}
-	}
+	matched := MatchModels(all, filter)
 	var sb strings.Builder
 	if filter == "" {
 		fmt.Fprintf(&sb, "%d models available (current: `%s`). `%smodel <id>` to switch, `%smodel <filter>` to narrow:\n\n",

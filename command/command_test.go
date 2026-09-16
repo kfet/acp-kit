@@ -575,6 +575,31 @@ func TestModelsCap(t *testing.T) {
 	}
 }
 
+func TestMatchModels(t *testing.T) {
+	all := []client.ModelInfo{{ID: "anthropic/claude-opus-4-5"}, {ID: "anthropic/claude-sonnet-4-5"}, {ID: "openai/GPT-5-OPUS"}}
+	// An empty filter matches everything, in the agent's own order.
+	if got := MatchModels(all, ""); len(got) != 3 || got[0].ID != all[0].ID {
+		t.Fatalf("empty filter = %v, want all three in order", got)
+	}
+	// Case-insensitive substring, on the ID, preserving order.
+	got := MatchModels(all, "OpUs")
+	if len(got) != 2 || got[0].ID != "anthropic/claude-opus-4-5" || got[1].ID != "openai/GPT-5-OPUS" {
+		t.Fatalf("opus filter = %v, want both opus ids in agent order", got)
+	}
+	// Surrounding whitespace is not part of the filter.
+	if got := MatchModels(all, "  sonnet "); len(got) != 1 || got[0].ID != "anthropic/claude-sonnet-4-5" {
+		t.Fatalf("padded filter = %v, want the one sonnet", got)
+	}
+	// No match is an empty slice, never nil-vs-alias confusion.
+	if got := MatchModels(all, "gemini"); len(got) != 0 {
+		t.Fatalf("unmatched filter = %v, want none", got)
+	}
+	// Never an alias of the input: a caller may sort or truncate it.
+	if got := MatchModels(all, ""); &got[0] == &all[0] {
+		t.Fatal("MatchModels aliased its input slice")
+	}
+}
+
 func TestModelCommand(t *testing.T) {
 	models := []client.ModelInfo{{ID: "p/m"}, {ID: "p/other"}, {ID: "q/m"}}
 	c := &fakeCtrl{models: models, current: "p/m", status: SessionStatus{EffectiveModel: "p/m"}}

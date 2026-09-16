@@ -8,6 +8,19 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-17
+
+### Added
+
+- `command.MatchModels(all, filter)` is exported: the one matcher behind
+  a `!model <filter>` listing — case-insensitive substring on the model
+  ID, in the agent's reported order, empty filter matching everything.
+  `Broker.ModelList` now calls it rather than inlining the rule. A relay
+  that renders the same selection onto its own surface (zulip-acp
+  narrows a votable model poll with it) must not re-implement the rule,
+  or its widget and this listing's prose would disagree about what
+  "opus" matches.
+
 ## [0.17.0] - 2026-09-09
 
 ### Added
