@@ -8,6 +8,35 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-17
+
+### Added
+
+- `probe.Models(ctx, probe.Config{...})` retries `AgentProc.ProbeModels`
+  with exponential backoff inside an overall budget. The startup probe
+  races agent readiness — `fir --mode acp --wait-mcp` blocks until every
+  MCP server is up — and a one-shot probe treats a slow-but-healthy
+  agent as a permanently broken one, leaving `Models()` empty until the
+  first real conversation session fills it. It is best-effort by
+  contract: exhausting the budget is logged and tolerated, never fatal,
+  because the model list drives only cosmetic surfaces and a relay that
+  will not serve messages until its menu is ready is a worse bug.
+  Lifted from slack-acp's `internal/probe`, which has run this policy in
+  production; it moves here because all three relays need the same thing
+  at the same moment (immediately after `client.Start`). slack-acp and
+  poe-acp still carry their own copies and collapse onto this one in a
+  follow-up.
+
+- `probe.Tracker` / `probe.Status` record whether the probe has finished
+  and whether it succeeded. `Models()` returning an empty list answers
+  two different questions with one value — nobody has asked the agent
+  yet, or the agent was asked and genuinely has no models — and only the
+  second is the user's to fix by authenticating a provider. A relay that
+  renders the empty list needs to tell them apart to word it honestly.
+  The zero `Tracker` is `StatusPending`, and a run records its outcome
+  on every exit path, so a finished probe can never be left reporting
+  "still starting".
+
 ## [0.17.1] - 2026-09-17
 
 ### Added
