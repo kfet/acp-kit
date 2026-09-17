@@ -8,6 +8,46 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-17
+
+### Added
+
+- `client.NoticeMethod` (`_dev.acp-kit/notice`), `client.Notice` and the
+  optional `client.NoticeSink` interface give agents a way to report
+  operational events — a provider rate-limit retry, a failed compaction —
+  out of band. They previously had only one channel: agent message text,
+  which is the same ordered stream as the model's answer tokens and
+  byte-identical to them. A notice emitted from a background goroutine
+  therefore landed wherever the stream happened to be, in practice
+  mid-sentence inside the user's reply. No separator or formatting can fix
+  that; two independent writers sharing one stream is the bug. A distinct
+  JSON-RPC method is the tiebreaker, and a relay can route notices to a
+  status line while the answer stream stays the answer.
+
+  The same leak quietly defeated ambient-silence detection, which
+  accumulates agent message text to decide whether a turn abstained: an
+  MCP server connecting mid-turn counted as a reply.
+
+  A sink that does not implement `NoticeSink` never sees notices and they
+  are dropped — correct, since a notice is never part of the answer.
+  Malformed, unroutable and failing notices are likewise dropped rather
+  than errored: a notice is decoration on a turn, never worth failing one
+  over.
+
+- `Caps.Notices` / `AgentProc.AgentSupportsNotices()` report whether the
+  agent advertised the extension in `agentCapabilities._meta`. Receiving
+  notices does not depend on it — dispatch routes them regardless — but a
+  relay can use it to tell "this agent will tell me about provider
+  retries" from "this agent will simply go quiet".
+
+### Changed
+
+- `dispatch` now ignores any unrecognized `_`-prefixed method instead of
+  answering `MethodNotFound`, per the ACP extensibility spec's
+  SHOULD-ignore-unrecognized-notifications rule. This is what makes
+  relay/agent version skew safe in both directions. Unknown *core*
+  methods still error.
+
 ## [0.18.0] - 2026-09-17
 
 ### Added

@@ -87,6 +87,12 @@ type Caps struct {
 	// the entry — typically `{}` or `{"version": N}`. nil when the
 	// agent advertised no _meta.
 	Extensions map[string]json.RawMessage
+	// Notices reflects whether the agent advertised the acp-kit notice
+	// extension (see NoticeMethod). Receiving notices does not depend on
+	// this — dispatch routes them regardless — but a relay can use it to
+	// tell "this agent will tell me about provider retries" from "this
+	// agent will simply go quiet".
+	Notices bool
 }
 
 // SessionInfo is one entry from a session/list response.
@@ -408,6 +414,7 @@ func parseCaps(raw json.RawMessage) Caps {
 		Audio:           env.AgentCapabilities.PromptCapabilities.Audio,
 		SystemPrompt:    sysPrompt,
 		Extensions:      exts,
+		Notices:         parseNoticeCap(exts),
 	}
 }
 
@@ -909,6 +916,17 @@ func (a *AgentProc) dispatch(ctx context.Context, method string, params json.Raw
 		}
 		return acp.WriteTextFileResponse{}, nil
 	default:
+		// Extension methods ("_"-prefixed) are the sanctioned escape hatch.
+		// We recognise the acp-kit notice notification; anything else is
+		// unknown to us, and the spec says to ignore unrecognized
+		// notifications rather than fail them.
+		if method == NoticeMethod {
+			a.handleNotice(ctx, params)
+			return nil, nil
+		}
+		if strings.HasPrefix(method, "_") {
+			return nil, nil
+		}
 		// Terminal methods and any unknown call: we never advertised
 		// the capability, so the agent shouldn't be calling these.
 		return nil, acp.NewMethodNotFound(method)
