@@ -230,7 +230,11 @@ func (t *Tools) scheduleTools() []Tool {
 		Name: ToolSchedule,
 		Description: "Schedule a prompt to be sent to you later IN THIS CONVERSATION, with its full history. " +
 			"On fire it starts a normal turn whose answer is posted here. Use it for conversation-scoped " +
-			"follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores.",
+			"follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores. " +
+			"Your turn ends when you stop writing, and nothing wakes you again by itself. So when you " +
+			"intend to come back to a task later, or to check on a subagent, a build, or any job you " +
+			"started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, " +
+			"so the future turn can act without guessing.",
 		Schema: objectSchemaReq(map[string]any{
 			"text":  strProp("The prompt to send yourself when it fires."),
 			"in":    strProp("Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at."),

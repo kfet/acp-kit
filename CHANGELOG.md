@@ -8,6 +8,18 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-18
+
+### Changed
+
+- The `schedule` loopback tool now tells the agent *when* to reach for it. An
+  agent turn ends when the agent stops writing, and nothing wakes it again by
+  itself; an intention stated in prose ("I will check on that build") therefore
+  never runs. The description now instructs the agent to schedule the wake-up
+  in the same turn it forms the intention — returning to a task, checking a
+  subagent, a build, or any job it started — and to say what to verify in the
+  prompt text, so the future turn can act without guessing.
+
 ## [0.19.0] - 2026-09-17
 
 ### Added
