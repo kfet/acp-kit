@@ -23,12 +23,12 @@ var (
 	ErrTurnCeiling = errors.New("acp: turn exceeded its absolute ceiling")
 )
 
-// defaultNoProgressTimeout bounds a wedged turn when
+// DefaultNoProgressTimeout bounds a wedged turn when
 // TurnLivenessConfig.NoProgressTimeout is unset. Two minutes of total silence
 // from an agent — not one token, not one tool call — is already far outside
 // normal behaviour, while being generous enough never to cut a turn that is
 // merely slow.
-const defaultNoProgressTimeout = 2 * time.Minute
+const DefaultNoProgressTimeout = 2 * time.Minute
 
 // TurnLivenessConfig configures StartTurnLiveness.
 type TurnLivenessConfig struct {
@@ -45,7 +45,7 @@ type TurnLivenessConfig struct {
 	// the absence of PROGRESS, not the absence of a user. Naming it after
 	// the condition it detects keeps the two from ever being confused.
 	//
-	// <=0 falls back to defaultNoProgressTimeout (2m).
+	// <=0 falls back to DefaultNoProgressTimeout (2m).
 	NoProgressTimeout time.Duration
 
 	// MaxTurnDuration is an OPTIONAL absolute wall-clock ceiling on the turn,
@@ -151,7 +151,7 @@ type TurnLiveness struct {
 func StartTurnLiveness(parent context.Context, cfg TurnLivenessConfig) (*TurnLiveness, context.Context, context.CancelFunc) {
 	window := cfg.NoProgressTimeout
 	if window <= 0 {
-		window = defaultNoProgressTimeout
+		window = DefaultNoProgressTimeout
 	}
 	// The ceiling is a plain deadline on an intermediate context rather
 	// than a second timer: it needs no reset, its cause propagates to

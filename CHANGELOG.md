@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `sysprompt.LivenessNote(window)` renders the turn-watchdog disclosure for the
+  agent's system prompt from the live window, so an agent knows the no-progress
+  window exists *before* it picks a poll interval instead of learning it from
+  the death notice. A window `<=0` renders the same default the client falls
+  back to.
+- `client.DefaultNoProgressTimeout` is now exported, so the note and any other
+  caller render the real fallback rather than a copy of it.
+
 ## [0.19.1] - 2026-09-18
 
 ### Changed

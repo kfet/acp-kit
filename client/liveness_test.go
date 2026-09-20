@@ -214,8 +214,8 @@ func TestTurnLiveness_TightRaceKeepsTurnAlive(t *testing.T) {
 func TestTurnLiveness_DefaultWindow(t *testing.T) {
 	live, _, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{})
 	defer stop()
-	if live.window != defaultNoProgressTimeout {
-		t.Fatalf("window = %s, want %s", live.window, defaultNoProgressTimeout)
+	if live.window != DefaultNoProgressTimeout {
+		t.Fatalf("window = %s, want %s", live.window, DefaultNoProgressTimeout)
 	}
 }
 
