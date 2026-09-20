@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-20
+
 ### Added
 
 - `sysprompt.LivenessNote(window)` renders the turn-watchdog disclosure for the
