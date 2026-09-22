@@ -8,6 +8,13 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-09-22
+
+### Fixed
+
+- `client.AgentProc` no longer records session stats for a session with no
+  sink, and no longer takes its lock for updates that carry no stats.
+
 ## [0.21.0] - 2026-09-22
 
 ### Added

@@ -79,10 +79,18 @@ func (a *AgentProc) noteConfig(sid acp.SessionId, opts []acp.SessionConfigOption
 	}
 }
 
-// noteUpdate records the stats a session notification carries.
+// noteUpdate records the stats a session notification carries. It
+// ignores a session with no sink (dropped or never registered), so a
+// late update cannot re-add an entry that DropSession removed.
 func (a *AgentProc) noteUpdate(sid acp.SessionId, u acp.SessionUpdate) {
+	if u.ConfigOptionUpdate == nil && u.UsageUpdate == nil {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if _, ok := a.sinks[sid]; !ok {
+		return
+	}
 	if c := u.ConfigOptionUpdate; c != nil {
 		a.noteConfig(sid, c.ConfigOptions)
 	}

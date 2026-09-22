@@ -89,6 +89,13 @@ func TestSessionStats(t *testing.T) {
 	if _, ok := a.SessionStats(sid); ok {
 		t.Fatal("stats survive DropSession")
 	}
+	// A late update for the dropped session adds nothing back.
+	_ = a.sessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.SessionUpdate{
+		UsageUpdate: &acp.SessionUsageUpdate{Used: 1, Size: 2},
+	}})
+	if _, ok := a.SessionStats(sid); ok {
+		t.Fatal("late update re-added stats")
+	}
 	if err := a.ResumeSession(ctx, "/cwd", "s2", &recSink{}); err != nil {
 		t.Fatal(err)
 	}
