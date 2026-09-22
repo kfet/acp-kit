@@ -1006,3 +1006,12 @@ func TestFormatTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestHelp_AddHelp(t *testing.T) {
+	b := New(newFake())
+	b.AddHelp("- `!update` — extra\n")
+	out, _ := b.Handle(context.Background(), "c1", "!help")
+	if !strings.Contains(out.Text, "- `!update` — extra\n") {
+		t.Fatalf("missing extra help: %s", out.Text)
+	}
+}

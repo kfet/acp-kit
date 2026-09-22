@@ -214,6 +214,8 @@ type Broker struct {
 	a    Authenticator
 	ctrl Controller // optional; set via SetController for session commands
 
+	extraHelp []string // relay-added !help bullets, see AddHelp
+
 	mu      sync.Mutex
 	pending map[string]pendingEntry // convID → in-flight login
 }
@@ -222,6 +224,12 @@ type Broker struct {
 // !status/!model/!new. Call once at startup, after construction,
 // to break the broker↔router construction cycle. Safe before any turns.
 func (b *Broker) SetController(c Controller) { b.ctrl = c }
+
+// AddHelp appends relay-supplied bullets (each a full "- `!x` — …\n"
+// line) to !help, listed with the relay commands. Used for optional
+// commands the broker does not own, e.g. acp-kit/update's HelpLine.
+// Call at startup, before any turns.
+func (b *Broker) AddHelp(lines ...string) { b.extraHelp = append(b.extraHelp, lines...) }
 
 // Passthrough decides whether text is an allowlisted agent command and,
 // if so, returns the prompt text to forward to the agent (e.g. "!reload"
@@ -555,6 +563,9 @@ func (b *Broker) help() *Outcome {
 	}
 	sb.WriteString("- `" + s + "login [provider|cancel]` — connect a provider (e.g. `" + s +
 		"login anthropic`), or abort a login in progress\n")
+	for _, l := range b.extraHelp {
+		sb.WriteString(l)
+	}
 	if pt := b.passthroughCommands(); len(pt) > 0 {
 		sb.WriteString("\nAgent commands:\n\n")
 		for _, c := range pt {

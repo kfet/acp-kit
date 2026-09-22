@@ -8,6 +8,17 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-22
+
+### Added
+
+- `update` package: the shared owner-only `!update [fir|relay] [--check|--force|--rollback]`
+  chat command. Relays supply `UpdateAgent`/`UpdateSelf` hooks plus `CancelAll`/`WaitIdle`
+  for `--force`; the command keeps `fir.prev`, refuses fleet-managed hosts without
+  `--force`, serialises via a lock file, and reports across the graceful reload with a
+  marker file consumed by `Updater.Resume`.
+- `command.Broker.AddHelp` for relay-supplied `!help` bullets.
+
 ## [0.21.1] - 2026-09-22
 
 ### Fixed

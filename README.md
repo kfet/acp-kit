@@ -30,6 +30,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `terminal` — agent-side ACP terminal driver: foreground exec with timeout, a bounded pool of background commands, and leak cleanup, over a narrow `Conn` interface.
 - `sysprompt` — compose base relay prompt, operator extra text, and skill catalogs.
 - `remotefs` — make relay-side paths (session cwd, staged prompt files) exist on the host where the agent actually runs, for relays whose agent is reached over ssh. `Fetch` brings a file the agent produced back the other way. `Local` is the no-op/identity for a local agent.
+- `update` — the owner-only `!update` chat command: update fir and/or the relay binary via relay hooks, keep `fir.prev` for `--rollback`, `--check` versions (disk / running / dist.lock), refuse on fleet-managed hosts without `--force`, cancel in-flight turns on `--force`, then ONE graceful reload; a marker file lets the new image report `fir X → Y, relay A → B` into the requesting conversation. Never hard-restarts.
 - `paths` — XDG state/config path helpers.
 - `log` — opt-in debug logging.
 
@@ -96,4 +97,5 @@ turn and has nothing to speak on afterwards — and gets the read/steer subset.
 - `remotefs` exists because an agent command line is opaque and the ACP handshake never reports the agent's host: remoteness must be operator configuration. A remote agent that receives a nonexistent `cwd` does not fail — it falls back to `$HOME` — so provisioning failures must be surfaced loudly by the caller rather than fallen through.
 - `mcphost` binds a tool call's session key **server-side from the connection token**. `relaytool` therefore never accepts a conversation as a tool argument — every loopback tool acts on the conversation the call came from, and only that one. Do not add a `target` parameter without a threat model.
 - `mcphost.Listen` refuses to bind over a socket a **live** process is still serving, but freely unlinks a stale one. After a same-PID exec the previous holder was this very process, so removing its socket is correct, not racy.
+- `update` never restarts the relay: if `--force` cannot drain the cancelled turns it reports and stops, because a hard restart loses queued messages.
 - A loopback tool must never destroy the turn that is calling it. That is why `relaytool` exposes no `stop`, and why `new_session` is deferred to `Tools.EndTurn`.
