@@ -188,3 +188,18 @@ func TestSystemPromptForKeyResolver(t *testing.T) {
 		t.Fatalf("newBlocks = %v", ag.newBlocks)
 	}
 }
+
+func TestLive(t *testing.T) {
+	m := newManagerT(t, Config{Agent: &fakeAgent{}})
+	if _, _, ok := m.Live("conv1"); ok {
+		t.Fatal("live before create")
+	}
+	s, err := m.GetOrCreate(context.Background(), "conv1", stubSink{})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	sid, last, ok := m.Live("conv1")
+	if !ok || sid != s.SessionID || last.IsZero() {
+		t.Fatalf("Live = %q %v %v", sid, last, ok)
+	}
+}

@@ -8,6 +8,27 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-22
+
+### Added
+
+- `client.AgentProc.AgentInfo()` returns the agent's name, title and version
+  from the initialize response (`agentInfo`).
+- `client.AgentProc.SessionStats(sid)` returns what the agent reported about a
+  session: its `thought_level` config value (from session/new, session/resume
+  and `config_option_update`) and its latest `usage_update` (context tokens,
+  window size, cost).
+- `state.Manager.Live(key)` reports a key's live session id and last-use time
+  without creating a session.
+- `!status` shows the agent name and version, context usage, cost and last
+  activity when the relay supplies them (`RelayInfo.AgentName`/`AgentVersion`,
+  `SessionStatus.ContextUsed`/`ContextSize`/`Cost`/`LastActivity`).
+
+### Changed
+
+- `!status` labels the agent command `agent cmd:`; `agent:` is now the agent's
+  name and version.
+
 ## [0.20.0] - 2026-09-20
 
 ### Added

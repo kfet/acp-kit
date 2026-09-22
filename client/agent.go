@@ -191,6 +191,11 @@ type AgentProc struct {
 	models *modelState                         // cached model list (nil until first NewSession or Probe)
 
 	authMethods []AuthMethod // parsed from initialize response
+	agentInfo   AgentInfo    // parsed from initialize response
+
+	// stats holds what the agent reported per session: thinking
+	// level and usage. See SessionStats.
+	stats map[acp.SessionId]SessionStats
 
 	// availableCommands is the latest agent-advertised command catalog,
 	// snapshotted from session/update notifications. Nil until the agent
@@ -328,6 +333,7 @@ func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteClose
 		cfg:   cfg,
 		cmd:   cmd,
 		sinks: make(map[acp.SessionId]SessionUpdateSink),
+		stats: make(map[acp.SessionId]SessionStats),
 		done:  make(chan struct{}),
 	}
 	// Exactly one goroutine ever calls cmd.Wait. It starts before the
@@ -358,6 +364,7 @@ func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteClose
 	}
 	a.caps = parseCaps(raw)
 	a.authMethods = parseAuthMethods(raw)
+	a.agentInfo = parseAgentInfo(raw)
 	return a, nil
 }
 
@@ -465,6 +472,7 @@ func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink Ses
 	}
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
+	a.noteConfig(resp.SessionId, resp.ConfigOptions)
 	if ms := resp.modelState(); ms != nil {
 		a.models = ms
 	}
@@ -612,6 +620,7 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	// RPC exists). Cost: one map entry on the agent side.
 	a.mu.Lock()
 	delete(a.sinks, sid)
+	delete(a.stats, sid)
 	a.mu.Unlock()
 	return nil
 }
@@ -643,6 +652,7 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	}
 	a.mu.Lock()
 	a.sinks[sid] = sink
+	a.noteConfig(sid, resp.ConfigOptions)
 	if ms := resp.modelState(); ms != nil {
 		a.models = ms
 	}
@@ -694,6 +704,7 @@ func (a *AgentProc) Cancel(ctx context.Context, sid acp.SessionId) error {
 func (a *AgentProc) DropSession(sid acp.SessionId) {
 	a.mu.Lock()
 	delete(a.sinks, sid)
+	delete(a.stats, sid)
 	a.mu.Unlock()
 }
 
@@ -958,6 +969,7 @@ func (a *AgentProc) sessionUpdate(ctx context.Context, params acp.SessionNotific
 		a.availableCommands = cmds
 		a.mu.Unlock()
 	}
+	a.noteUpdate(params.SessionId, params.Update)
 	if s := a.sinkFor(params.SessionId); s != nil {
 		return s.OnUpdate(ctx, params)
 	}

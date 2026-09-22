@@ -498,10 +498,12 @@ func TestStatus(t *testing.T) {
 			Thinking: "low", HasSession: true, ModelsAvailable: 7,
 			ConvID: "c123", StateDir: "/var/state/convs/c123",
 			Where: `#fleet > "hacking"`, TurnRunning: true,
+			ContextUsed: 45_000, ContextSize: 200_000, Cost: "0.42 USD", LastActivity: "3m",
 		},
 		relayInfo: RelayInfo{
 			Version: "9.9.9", Uptime: "3h2m1s", AgentCmd: "fir --mode acp",
 			ActiveSessions: 4, SessionID: "sess-abc",
+			AgentName: "fir", AgentVersion: "1.18.4",
 		},
 	})
 	got := hb(b, "!status")
@@ -519,7 +521,12 @@ func TestStatus(t *testing.T) {
 		}
 	}
 	// ...plus the relay info folded in from the former !relay.
-	for _, w := range []string{"9.9.9", "3h2m1s", "fir --mode acp", "sess-abc", "active conversations: 4"} {
+	for _, w := range []string{"context: 45.0k / 200.0k tokens (22%)", "cost: 0.42 USD", "last activity: 3m ago"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("status missing session stat %q: %s", w, got)
+		}
+	}
+	for _, w := range []string{"agent: `fir 1.18.4`", "agent cmd: `fir --mode acp`", "9.9.9", "3h2m1s", "sess-abc", "active conversations: 4"} {
 		if !strings.Contains(got, w) {
 			t.Fatalf("status missing relay info %q: %s", w, got)
 		}
@@ -538,7 +545,7 @@ func TestStatus(t *testing.T) {
 	// The relay-optional conversation fields are omitted just as
 	// cleanly when the relay has no notion of them — a Poe-shaped
 	// controller must not sprout empty "conversation:" lines.
-	for _, bad := range []string{"here:", "conversation:", "state dir:", "turn running:"} {
+	for _, bad := range []string{"here:", "conversation:", "state dir:", "turn running:", "context:", "cost:", "last activity:", "agent cmd:"} {
 		if strings.Contains(g, bad) {
 			t.Fatalf("status should omit unset conversation field %q:\n%s", bad, g)
 		}
@@ -981,6 +988,21 @@ func TestStripSigil(t *testing.T) {
 		body, ok := StripSigil(c.in)
 		if body != c.body || ok != c.ok {
 			t.Errorf("StripSigil(%q) = %q, %v; want %q, %v", c.in, body, ok, c.body, c.ok)
+		}
+	}
+}
+
+func TestStatusContextWithoutSize(t *testing.T) {
+	b := withCtrl(&fakeCtrl{status: SessionStatus{EffectiveModel: "m", ContextUsed: 950}})
+	if g := hb(b, "!status"); !strings.Contains(g, "- context: 950 tokens\n") {
+		t.Fatalf("context without size: %s", g)
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1.0k", 12_345: "12.3k", 1_250_000: "1.2M"} {
+		if got := FormatTokens(n); got != want {
+			t.Fatalf("FormatTokens(%d) = %q, want %q", n, got, want)
 		}
 	}
 }

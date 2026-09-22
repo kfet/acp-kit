@@ -20,6 +20,7 @@ package command
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,6 +160,18 @@ func (b *Broker) Status(convID string) (string, error) {
 	if st.TurnRunning {
 		fmt.Fprintf(&sb, "- turn running: yes — `%sstop` interrupts it\n", DisplaySigil)
 	}
+	if st.ContextSize > 0 {
+		fmt.Fprintf(&sb, "- context: %s / %s tokens (%d%%)\n",
+			FormatTokens(st.ContextUsed), FormatTokens(st.ContextSize), st.ContextUsed*100/st.ContextSize)
+	} else if st.ContextUsed > 0 {
+		fmt.Fprintf(&sb, "- context: %s tokens\n", FormatTokens(st.ContextUsed))
+	}
+	if st.Cost != "" {
+		fmt.Fprintf(&sb, "- cost: %s\n", st.Cost)
+	}
+	if st.LastActivity != "" {
+		fmt.Fprintf(&sb, "- last activity: %s ago\n", st.LastActivity)
+	}
 	fmt.Fprintf(&sb, "- models available: %d\n", st.ModelsAvailable)
 	if ri.Version != "" {
 		fmt.Fprintf(&sb, "- relay: `%s`\n", ri.Version)
@@ -166,8 +179,11 @@ func (b *Broker) Status(convID string) (string, error) {
 	if ri.Uptime != "" {
 		fmt.Fprintf(&sb, "- uptime: %s\n", ri.Uptime)
 	}
+	if agent := strings.TrimSpace(ri.AgentName + " " + ri.AgentVersion); agent != "" {
+		fmt.Fprintf(&sb, "- agent: `%s`\n", agent)
+	}
 	if ri.AgentCmd != "" {
-		fmt.Fprintf(&sb, "- agent: `%s`\n", ri.AgentCmd)
+		fmt.Fprintf(&sb, "- agent cmd: `%s`\n", ri.AgentCmd)
 	}
 	fmt.Fprintf(&sb, "- active conversations: %d\n", ri.ActiveSessions)
 	if n := len(b.scheduleList(convID)); n > 0 {
@@ -343,4 +359,16 @@ func oneLine(s string) string {
 		return s[:scheduleSummaryCap] + "…"
 	}
 	return s
+}
+
+// FormatTokens renders a token count compactly for a phone screen:
+// 950, 12.3k, 1.2M.
+func FormatTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + "M"
+	case n >= 1_000:
+		return strconv.FormatFloat(float64(n)/1e3, 'f', 1, 64) + "k"
+	}
+	return strconv.Itoa(n)
 }

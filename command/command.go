@@ -179,14 +179,30 @@ type SessionStatus struct {
 	// TurnRunning reports whether a turn is in flight right now. Only
 	// meaningful on a relay that can tell; see TurnStopper.
 	TurnRunning bool
+	// ContextUsed and ContextSize are the tokens in the agent's
+	// context window and its size, as the agent last reported them
+	// (ACP usage_update). Zero when not reported.
+	ContextUsed int
+	ContextSize int
+	// Cost is the cumulative session cost, pre-formatted (e.g.
+	// "0.42 USD"); "" when the agent did not report one.
+	Cost string
+	// LastActivity is how long ago the conversation's session was last
+	// used, pre-formatted (e.g. "4m10s"); "" when unknown.
+	LastActivity string
 }
 
 // RelayInfo is a snapshot of relay-process realtime state, surfaced by
 // the !relay chat command.
 type RelayInfo struct {
-	Version         string
-	Uptime          string // pre-formatted (e.g. "3h2m1s"); "" if unknown
-	AgentCmd        string
+	Version  string
+	Uptime   string // pre-formatted (e.g. "3h2m1s"); "" if unknown
+	AgentCmd string
+	// AgentName and AgentVersion identify the agent, from the ACP
+	// initialize response (agentInfo) or another source the relay
+	// trusts. "" when unknown.
+	AgentName       string
+	AgentVersion    string
 	ModelsAvailable int
 	ActiveSessions  int    // live conv sessions tracked by the router
 	SessionID       string // this conv's live agent session id; "" if none

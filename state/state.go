@@ -185,6 +185,20 @@ func (m *Manager) Touch(s *Session) {
 	m.mu.Unlock()
 }
 
+// Live reports key's live ACP session id and when it was last used,
+// without creating a session. ok is false when key has no live session
+// (never started, or reaped by idle GC). It exists for read-only status
+// reports, which must not spawn a session as a side effect.
+func (m *Manager) Live(key string) (sid acp.SessionId, lastUsed time.Time, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.byKey[key]
+	if !ok {
+		return "", time.Time{}, false
+	}
+	return s.SessionID, s.lastUsed, true
+}
+
 // Cancel sends session/cancel if key has a live session.
 func (m *Manager) Cancel(ctx context.Context, key string) {
 	m.mu.Lock()
