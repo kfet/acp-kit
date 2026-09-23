@@ -317,6 +317,8 @@ func (u *Updater) Handle(ctx context.Context, req Request) Result {
 		case op.Rollback:
 			return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock): a rollback would drift it " +
 				"from its lock. Pin the older version in dist.lock and run `!update`.\n\n" + u.report(ctx)}
+		case req.Post == nil:
+			return Result{Text: "❌ This relay cannot report a converge job (no Request.Post), so `!update` cannot run here."}
 		case u.cfg.ConvergeCmd == "":
 			return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock) and no converge command " +
 				"is configured, so `!update` cannot run here. Configure one, or run converge by hand.\n\n" + u.report(ctx)}

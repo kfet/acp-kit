@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-09-23
+
+### Fixed
+
+- `update`: a fleet host refuses `!update` when the relay supplies no `Request.Post`, instead of starting a job whose report would crash the relay.
+
 ## [0.23.1] - 2026-09-23
 
 ### Fixed

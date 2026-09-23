@@ -43,6 +43,9 @@ func TestFleetRefusals(t *testing.T) {
 		t.Fatal(r.Text)
 	}
 	h, _ = fleetHarness(t, "true", nil)
+	if r := h.u.Handle(context.Background(), Request{Requester: "42", Text: "!update"}); !strings.Contains(r.Text, "no Request.Post") {
+		t.Fatal(r.Text)
+	}
 	if r := h.do("!update fir --rollback", "42"); !strings.Contains(r.Text, "rollback would drift") {
 		t.Fatal(r.Text)
 	}
