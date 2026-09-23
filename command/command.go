@@ -214,6 +214,9 @@ type Broker struct {
 	a    Authenticator
 	ctrl Controller // optional; set via SetController for session commands
 
+	post  Poster    // optional; see SetPoster
+	sched Scheduler // optional; see SetScheduler
+
 	extraHelp []string // relay-added !help bullets, see AddHelp
 
 	mu      sync.Mutex

@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-24
+
+### Added
+
+- `convo`: the shared conversation core — model overrides with an optional persistent store, a serial or supersede turn runner, a race-safe in-flight turn registry (stop, turn-token cancel, claim-when-idle), a sheddable per-session queue, pluggable turn liveness, a default `command.Controller` and one `Dispatch` entry with relay filters, commands and hooks. Standard `!commands` are on by default.
+- `state`: `Manager.Reset` drops a conversation's session; the next turn starts a new one instead of resuming it.
+- `command`: `Broker.SetPoster` / `SetScheduler` supply the optional capabilities apart from the Controller.
+
 ## [0.23.2] - 2026-09-23
 
 ### Fixed

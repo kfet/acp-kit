@@ -305,3 +305,28 @@ func TestSchedulingCanBeSwitchedOff(t *testing.T) {
 		t.Fatalf("status = %q, %v", got, err)
 	}
 }
+
+// TestCapabilitiesSetSeparately: a relay whose Controller is not its own
+// type (a convo.Manager's) hands Poster and Scheduler over directly, and
+// they win over the Controller.
+func TestCapabilitiesSetSeparately(t *testing.T) {
+	c := &loopbackCtrl{}
+	b := withCtrl(&fakeCtrl{})
+	if b.CanPost() || b.CanSchedule() {
+		t.Fatal("plain controller has capabilities")
+	}
+	b.SetPoster(c)
+	b.SetScheduler(c)
+	if !b.CanPost() || !b.CanSchedule() {
+		t.Fatal("separate capabilities ignored")
+	}
+	if err := b.Post("conv", "hi"); err != nil || len(c.posted) != 1 {
+		t.Fatal("post", err)
+	}
+	// Without any Controller at all.
+	b2 := New(nil)
+	b2.SetScheduler(c)
+	if !b2.CanSchedule() {
+		t.Fatal("scheduler without controller")
+	}
+}

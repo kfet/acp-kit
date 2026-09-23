@@ -79,6 +79,7 @@ type Manager struct {
 
 	mu    sync.Mutex
 	byKey map[string]*Session
+	fresh map[string]bool // keys Reset since their last session: skip resume once
 }
 
 // New constructs a Manager. Call Run(ctx) to start idle GC.
@@ -99,7 +100,7 @@ func New(cfg Config) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open state dir as root: %w", err)
 	}
-	return &Manager{cfg: cfg, root: root, byKey: make(map[string]*Session)}, nil
+	return &Manager{cfg: cfg, root: root, byKey: make(map[string]*Session), fresh: make(map[string]bool)}, nil
 }
 
 // Close releases the os.Root handle used by the default cwd allocator.
@@ -129,6 +130,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, key string, sink client.Sessi
 		m.cfg.Agent.RebindSink(s.SessionID, sink)
 		return s, nil
 	}
+	fresh := m.fresh[key]
 	m.mu.Unlock()
 
 	cwd, err := m.cwdFor(key)
@@ -137,7 +139,11 @@ func (m *Manager) GetOrCreate(ctx context.Context, key string, sink client.Sessi
 	}
 
 	sys := m.systemPrompt(key)
-	sid, resumed := m.tryResume(ctx, cwd, sink)
+	var sid acp.SessionId
+	resumed := false
+	if !fresh {
+		sid, resumed = m.tryResume(ctx, cwd, sink)
+	}
 	caps := m.cfg.Agent.Caps()
 	pendingInline := false
 	if !resumed {
@@ -166,10 +172,12 @@ func (m *Manager) GetOrCreate(ctx context.Context, key string, sink client.Sessi
 	if other, ok := m.byKey[key]; ok {
 		m.cfg.Agent.DropSession(sid)
 		other.lastUsed = time.Now()
+		delete(m.fresh, key)
 		m.cfg.Agent.RebindSink(other.SessionID, sink)
 		return other, nil
 	}
 	m.byKey[key] = s
+	delete(m.fresh, key)
 	if resumed {
 		kitlog.Debugf("state: resumed session %s for %s in %s", sid, key, cwd)
 	} else {
@@ -208,6 +216,22 @@ func (m *Manager) Cancel(ctx context.Context, key string) {
 		return
 	}
 	_ = m.cfg.Agent.Cancel(ctx, s.SessionID)
+}
+
+// Reset drops key's live session so the next GetOrCreate starts a NEW
+// one: the resume tier is skipped once, or it would simply reload the
+// session being discarded. The cwd is kept. It never errors; the error
+// return satisfies convo.Resetter.
+func (m *Manager) Reset(key string) error {
+	m.mu.Lock()
+	s, ok := m.byKey[key]
+	delete(m.byKey, key)
+	m.fresh[key] = true
+	m.mu.Unlock()
+	if ok {
+		m.cfg.Agent.DropSession(s.SessionID)
+	}
+	return nil
 }
 
 // Run drives idle GC until ctx is cancelled.

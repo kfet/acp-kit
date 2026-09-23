@@ -84,8 +84,20 @@ type Scheduler interface {
 	Unschedule(convID, id string) error
 }
 
-// poster returns the Controller's Poster capability, if it has one.
+// SetPoster supplies the Poster capability separately from the
+// Controller, for a relay whose Controller is not its own type (a
+// convo.Manager's). It takes precedence over the Controller's own.
+func (b *Broker) SetPoster(p Poster) { b.post = p }
+
+// SetScheduler supplies the Scheduler capability separately from the
+// Controller; see SetPoster.
+func (b *Broker) SetScheduler(s Scheduler) { b.sched = s }
+
+// poster returns the Poster capability, if the relay has one.
 func (b *Broker) poster() (Poster, bool) {
+	if b.post != nil {
+		return b.post, true
+	}
 	if b.ctrl == nil {
 		return nil, false
 	}
@@ -97,10 +109,10 @@ func (b *Broker) poster() (Poster, bool) {
 // one AND scheduling is actually switched on. This is the single gate:
 // every other mention of scheduling in this package goes through it.
 func (b *Broker) scheduler() (Scheduler, bool) {
-	if b.ctrl == nil {
-		return nil, false
+	s, ok := b.sched, b.sched != nil
+	if !ok && b.ctrl != nil {
+		s, ok = b.ctrl.(Scheduler)
 	}
-	s, ok := b.ctrl.(Scheduler)
 	if !ok || !s.CanSchedule() {
 		return nil, false
 	}

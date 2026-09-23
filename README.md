@@ -22,6 +22,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `state` — conversation-key to ACP-session manager: stable cwd allocation, best-effort resume, idle GC, system-prompt fallback regime.
 - `attachments` — cwd-local attachment sandbox plus ACP `ResourceLink` / embedded text resource blocks.
 - `skills` — load embedded/host fir-style skills and format `<available_skills>` catalogs.
+- `convo` — the shared conversation → ACP-session manager core every relay puts between its chat surface and the agent: sticky per-conversation `!model` overrides (optional persistent `Store`, lazy `ApplyModel`), a turn runner (`Serial` FIFO or `Supersede`), a race-safe in-flight registry (`Active`: `!stop`, turn-token `CancelToken`, claim-when-idle), a sheddable per-session `Queue`, a pluggable turn `Liveness`, a default `command.Controller` with relay `Hooks`, and one `Dispatch` entry (relay filters → broker → passthrough → prompt). Standard `!commands` are on by default. Relays inject a `Sink`, `Before`/`After` filters, relay-only `Extra` commands, `Sessions` (`state.Manager` satisfies it) and hooks.
 - `command` — the shared relay chat-command surface: the `!login` family and its two-call interactive-auth bridge, plus `!help` / `!status` / `!model` / `!new` / `!stop` / `!schedules` over a relay-supplied `Controller`. All session controls are implemented once as exported *actions*, so the `!command` a human types and the MCP tool an agent calls run the same code.
 - `mcphost` — generic self-hosted MCP server: unix socket, reconnecting redirector subprocess, per-session token auth, MCP JSON-RPC loop. Zero consumer-specific logic. Survives a consumer that re-execs itself in place (stable socket dir, token registry carried through the environment).
 - `relaytool` — the **agent→relay loopback**: exposes the relay's own bot interface to the agent as MCP tools (`status`, `list_models`, `set_model`, `new_session`, `post`, `schedule`, `list_schedules`, `unschedule`) over `mcphost` + `command`.
@@ -80,7 +81,8 @@ than a retryable error.
 All three are additive: a consumer that does not set `Config.Dir` gets exactly
 the previous behaviour.
 
-Implement `command.Poster` and/or `command.Scheduler` on the Controller to get
+Implement `command.Poster` and/or `command.Scheduler` on the Controller (or
+hand them to `Broker.SetPoster` / `SetScheduler`, which `convo.Config` does) to get
 `post` and the scheduling tools; implement neither and they are simply not
 advertised. `poe-acp` implements neither — it answers one HTTP request per
 turn and has nothing to speak on afterwards — and gets the read/steer subset.

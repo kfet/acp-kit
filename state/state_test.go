@@ -463,3 +463,35 @@ func TestRaceLoserBranch(t *testing.T) {
 		t.Fatalf("loser sid was not dropped; drops=%v", ag.drops)
 	}
 }
+
+func TestResetSkipsResumeOnce(t *testing.T) {
+	ag := &fakeAgent{caps: client.Caps{ListSessions: true, ResumeSession: true},
+		listResp: []client.SessionInfo{{SessionId: "old"}}}
+	m := newManagerT(t, Config{Agent: ag})
+	s, _ := m.GetOrCreate(context.Background(), "k", stubSink{})
+	if s.SessionID != "old" {
+		t.Fatalf("first = %s, want resumed old", s.SessionID)
+	}
+	if err := m.Reset("k"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.drops) != 1 || ag.drops[0] != "old" {
+		t.Fatalf("drops = %v", ag.drops)
+	}
+	s, _ = m.GetOrCreate(context.Background(), "k", stubSink{})
+	if s.SessionID != "sess-1" {
+		t.Fatalf("after reset = %s, want new", s.SessionID)
+	}
+	_ = m.Reset("k")
+	_ = m.Reset("k") // no live session: no second drop
+	if len(ag.drops) != 2 {
+		t.Fatalf("drops = %v", ag.drops)
+	}
+	m.mu.Lock()
+	m.fresh = map[string]bool{}
+	m.mu.Unlock()
+	s, _ = m.GetOrCreate(context.Background(), "k", stubSink{})
+	if s.SessionID != "old" {
+		t.Fatalf("resume tier restored = %s", s.SessionID)
+	}
+}
