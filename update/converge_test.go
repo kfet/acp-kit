@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -51,19 +52,24 @@ func TestFleetRefusals(t *testing.T) {
 }
 
 func TestConvergeUpToDate(t *testing.T) {
-	h, posts := fleetHarness(t, "echo converged", nil)
+	fifo := filepath.Join(t.TempDir(), "go")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UPD_SECRET", "s3cret")
+	h, posts := fleetHarness(t, `[ -z "$UPD_SECRET" ] && read x < `+fifo, func(c *Config) { c.SecretEnvNames = []string{"UPD_SECRET"} })
 	r := h.do("!update", "42")
 	if r.After != nil || !strings.Contains(r.Text, "running converge") {
 		t.Fatal(r.Text)
 	}
+	// The job holds the update lock while it runs.
+	if r = h.do("!update relay", "42"); !strings.Contains(r.Text, "already in progress") {
+		t.Fatal(r.Text)
+	}
+	os.WriteFile(fifo, []byte("\n"), 0o600)
 	if got := <-posts; !strings.HasPrefix(got, "✅ Already up to date.") || !strings.Contains(got, "| fir |") {
 		t.Fatal(got)
 	}
-	// The watcher released the lock and removed the marker.
-	if r = h.do("!update relay", "42"); strings.Contains(r.Text, "already in progress") {
-		t.Fatal(r.Text)
-	}
-	<-posts
 	if h.agentRuns+h.selfRuns != 0 {
 		t.Fatal("converge path ran the in-place updaters")
 	}
@@ -93,18 +99,11 @@ func TestConvergeFailures(t *testing.T) {
 	if got := <-posts; !strings.Contains(got, "did not finish") {
 		t.Fatal(got)
 	}
-	// Timeout, and a Sleep cut short by its context.
-	for _, mut := range []func(*Config){
-		func(c *Config) { c.ConvergeTimeout = -1 },
-		func(c *Config) {
-			c.Sleep = func(context.Context, time.Duration) error { return context.Canceled }
-		},
-	} {
-		h, posts = fleetHarness(t, "sleep 0.2", mut)
-		h.do("!update", "42")
-		if got := <-posts; !strings.Contains(got, "did not finish") {
-			t.Fatal(got)
-		}
+	// Timeout.
+	h, posts = fleetHarness(t, "sleep 0.2", func(c *Config) { c.ConvergeTimeout = -1 })
+	h.do("!update", "42")
+	if got := <-posts; !strings.Contains(got, "did not finish") {
+		t.Fatal(got)
 	}
 	// Start failure.
 	h, _ = fleetHarness(t, "true", func(c *Config) { c.ConvergeWrap = []string{"/nonexistent/wrap"} })
@@ -157,7 +156,7 @@ func TestConvergeForce(t *testing.T) {
 func TestConvergeResume(t *testing.T) {
 	h, _ := fleetHarness(t, "", nil)
 	os.MkdirAll(h.u.cfg.StateDir, 0o755)
-	logPath, rcPath, pidPath := h.u.convergeFiles()
+	logPath, rcPath, _ := h.u.convergeFiles()
 	os.WriteFile(logPath, []byte("log"), 0o644)
 	h.u.writeMarker(Marker{ConvID: "c9", OldAgent: "1.0.0", OldRelay: "0.0.9", At: time.Unix(0, 0), Converge: true})
 	os.WriteFile(rcPath, []byte("0\n"), 0o644)
@@ -168,8 +167,11 @@ func TestConvergeResume(t *testing.T) {
 	if s := <-got; s != "c9: ✅ Updated via converge: fir 1.0.0 → 1.0.0, zulip-acp 0.0.9 → 0.1.0." {
 		t.Fatal(s)
 	}
-	// A job that died without an rc file, found through its pid file.
-	os.Remove(rcPath)
+	// A job that died without an rc file, found through its pid file,
+	// in an image whose lock is already taken.
+	h, _ = fleetHarness(t, "", nil)
+	h.u.acquire()
+	_, _, pidPath := h.u.convergeFiles()
 	cmd := exec.Command("true")
 	cmd.Start()
 	os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
@@ -196,9 +198,13 @@ func TestWatchEdges(t *testing.T) {
 	// Unparseable marker.
 	os.WriteFile(h.u.markerPath(), []byte("nope"), 0o644)
 	h.u.watch(context.Background(), gone, post)
-	// No post func.
+	// This image shuts down first: no report, the marker stays.
 	h.u.writeMarker(Marker{Converge: true})
-	h.u.watch(context.Background(), gone, nil)
+	h.u.cfg.Sleep = func(context.Context, time.Duration) error { return context.Canceled }
+	h.u.watch(context.Background(), func() bool { return false }, post)
+	if _, err := os.Stat(h.u.markerPath()); err != nil {
+		t.Fatal("marker dropped on shutdown")
+	}
 	if called {
 		t.Fatal("posted without a valid marker")
 	}
@@ -213,6 +219,9 @@ func TestWatchEdges(t *testing.T) {
 }
 
 func TestConvergeHelpers(t *testing.T) {
+	if e := scrubEnv([]string{"A=1", "KEY=s", "B"}, []string{"KEY"}); strings.Join(e, ",") != "A=1,B" {
+		t.Fatal(e)
+	}
 	if d := diffLock(map[string]string{"a": "1", "resolved_at": "x", "b": "2"}, map[string]string{"a": "2", "c": "3"}); d != "a 1 → 2, b 2 → —, c — → 3" {
 		t.Fatal(d)
 	}

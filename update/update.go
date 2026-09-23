@@ -86,6 +86,9 @@ type Config struct {
 	PollInterval    time.Duration
 	// Sleep waits d or until ctx is done. Default: a timer.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// SecretEnvNames are dropped from the converge job's environment:
+	// it needs none of the relay's credentials.
+	SecretEnvNames []string
 	// Logf logs errors that have no reply to go to. Optional.
 	Logf func(format string, args ...any)
 	// RelayLockKey / AgentLockKey are the dist.lock keys. Defaults:
@@ -596,19 +599,29 @@ func (u *Updater) Resume(ctx context.Context, post func(convID, text string) err
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err == nil && m.Converge && u.cfg.Now().Sub(m.At) <= markerTTL {
-		// The converge job reloaded us and may still be running: the
-		// watcher reports when it ends and removes the marker then.
-		go u.watch(ctx, u.convergeGone, func(text string) error { return post(m.ConvID, text) })
-		return nil
-	}
-	defer os.RemoveAll(u.markerPath())
 	if err != nil {
+		os.RemoveAll(u.markerPath())
 		return err
 	}
 	if age := u.cfg.Now().Sub(m.At); age > markerTTL {
+		os.RemoveAll(u.markerPath())
 		return fmt.Errorf("update marker is %s old; discarded without reporting", age.Round(time.Second))
 	}
+	if m.Converge {
+		// The converge job reloaded us and may still be running. The
+		// update lock did not survive the exec (close-on-exec), so take
+		// it again: a second `!update` must not start a second job. The
+		// watcher reports when the job ends and removes the marker.
+		held := u.acquire() == nil
+		go func() {
+			u.watch(ctx, u.convergeGone, func(text string) error { return post(m.ConvID, text) })
+			if held {
+				u.release()
+			}
+		}()
+		return nil
+	}
+	defer os.RemoveAll(u.markerPath())
 	newAgent := "?"
 	if u.cfg.AgentBin != "" {
 		newAgent = u.cfg.Version(ctx, u.cfg.AgentBin)

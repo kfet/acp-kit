@@ -25,10 +25,11 @@ import (
 //     exit status to an rc file), prefixed by Config.ConvergeWrap so it
 //     can leave the relay's cgroup and survive a hard restart.
 //   - A marker records the old versions and the old lock.
-//   - Whichever image sees the rc file first — the old one when nothing
-//     reloaded, the new one (from Resume) when it did — claims the
-//     marker and posts the summary. Claiming is a rename, so exactly one
-//     image reports.
+//   - The old image reports when nothing reloaded; the new image (from
+//     Resume) adopts the marker when the job reloaded it. The two never
+//     run at once — the reload is an exec in place — so the marker is
+//     removed only AFTER the post: an exec between the two costs a
+//     duplicate report, never a lost one.
 
 // convergeFiles returns the log, rc and pid paths of the converge job.
 func (u *Updater) convergeFiles() (logPath, rcPath, pidPath string) {
@@ -78,6 +79,7 @@ func (u *Updater) converge(ctx context.Context, req Request, op Op) (res Result,
 	argv := append(append([]string{}, u.cfg.ConvergeWrap...), "sh", "-c", script)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = lf, lf
+	cmd.Env = scrubEnv(os.Environ(), u.cfg.SecretEnvNames)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		os.Remove(u.markerPath())
@@ -99,7 +101,7 @@ func (u *Updater) converge(ctx context.Context, req Request, op Op) (res Result,
 		u.release()
 	}()
 	fmt.Fprintf(&log, "🔄 Fleet-managed host: running converge (log `%s`). I'll report here when it is done.", logPath)
-	return Result{Text: log.String()}, false
+	return Result{Text: log.String()}, true
 }
 
 // drain cancels every in-flight turn and waits for idle (--force).
@@ -116,11 +118,11 @@ func (u *Updater) drain(ctx context.Context, log *strings.Builder) (string, bool
 	return "", true
 }
 
-// watch waits for the converge job to finish, then claims the marker and
-// posts the summary through post. exited reports whether the job's
-// process is gone. A job that
-// exits without an rc file, or runs past ConvergeTimeout, is reported
-// as failed.
+// watch waits for the converge job to finish, then posts the summary
+// through post and removes the marker. exited reports whether the job's
+// process is gone. A job that exits without an rc file, or runs past
+// ConvergeTimeout, is reported as failed. When ctx ends first (this
+// image is shutting down) the marker is left for the next image.
 func (u *Updater) watch(ctx context.Context, exited func() bool, post func(string) error) {
 	_, rcPath, _ := u.convergeFiles()
 	deadline := u.cfg.Now().Add(u.cfg.ConvergeTimeout)
@@ -131,22 +133,21 @@ func (u *Updater) watch(ctx context.Context, exited func() bool, post func(strin
 		if _, err := os.Stat(rcPath); err == nil || gone {
 			break
 		}
-		if !u.cfg.Now().Before(deadline) || u.cfg.Sleep(ctx, u.cfg.PollInterval) != nil {
+		if !u.cfg.Now().Before(deadline) {
 			break
 		}
+		if u.cfg.Sleep(ctx, u.cfg.PollInterval) != nil {
+			return
+		}
 	}
-	claim := u.markerPath() + ".claim"
-	if os.Rename(u.markerPath(), claim) != nil {
-		return // the other image reported, or there was nothing to report
-	}
-	defer os.Remove(claim)
-	m, err := readMarker(claim)
-	if err != nil || post == nil {
+	m, err := readMarker(u.markerPath())
+	if err != nil {
 		return
 	}
 	if err := post(u.convergeReport(ctx, m)); err != nil {
 		u.logf("update: converge report: %v", err)
 	}
+	os.Remove(u.markerPath())
 }
 
 // convergeReport renders the outcome of a finished converge job.
@@ -241,4 +242,20 @@ func (u *Updater) logf(format string, args ...any) {
 	if u.cfg.Logf != nil {
 		u.cfg.Logf(format, args...)
 	}
+}
+
+// scrubEnv returns env without the variables named in drop.
+func scrubEnv(env, drop []string) []string {
+	out := make([]string, 0, len(env))
+next:
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		for _, d := range drop {
+			if name == d {
+				continue next
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
 }

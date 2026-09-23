@@ -8,6 +8,18 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-09-23
+
+### Fixed
+
+- `update`: the converge job now holds the update lock until it ends (v0.23.0 released it at once, so a second `!update` could start a second job), and the re-exec'd image takes the lock again while it watches the job.
+- `update`: the converge report is never lost across the reload (the marker is removed after the post, not before), and an image that shuts down while it watches leaves the marker for the next image instead of reporting a false failure.
+- `update`: a stale converge marker is discarded like any other stale marker.
+
+### Added
+
+- `update.Config.SecretEnvNames`: variables dropped from the converge job's environment.
+
 ## [0.23.0] - 2026-09-23
 
 ### Changed
