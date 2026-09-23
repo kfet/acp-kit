@@ -8,6 +8,17 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-23
+
+### Changed
+
+- `update`: on a fleet-managed host, `!update` (any target) now runs `Config.ConvergeCmd`
+  as a detached job instead of refusing. The job's summary (old → new versions, the
+  `dist.lock` change, or "already up to date" with the version table) is posted through
+  `Request.Post`, or by `Resume` in the re-exec'd image when the job reloaded the relay.
+  `--force` now only cancels in-flight turns; it no longer bypasses the lock. A fleet host
+  refuses `--rollback`, and refuses `!update` when no converge command is set.
+
 ## [0.22.0] - 2026-09-22
 
 ### Added

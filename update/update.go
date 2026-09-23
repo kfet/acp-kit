@@ -17,8 +17,10 @@
 //	!update relay            relay only, then reload
 //	!update fir --rollback   restore fir.prev, then reload
 //	!update --check          report versions; changes nothing
-//	... --force              cancel in-flight turns first (and allow
-//	                         updating a fleet-managed host)
+//	... --force              cancel in-flight turns first
+//
+// On a fleet-managed host (Config.Fleet) every update form except
+// --check runs Config.ConvergeCmd instead — see converge.go.
 //
 // Everything relay-specific is a hook in Config (UpdateAgent,
 // UpdateSelf, CancelAll, WaitIdle, Reload…). The relay decides WHO is
@@ -65,11 +67,27 @@ type Config struct {
 	// StateDir holds the lock file and the reload marker.
 	StateDir string
 
-	// Fleet marks a host managed by converge/dist.lock: updates are
-	// refused without --force, because they drift the host from its
-	// lock. LockFile, when set, is the dist.lock to compare against.
-	Fleet    bool
-	LockFile string
+	// Fleet marks a host managed by converge/dist.lock. An update there
+	// runs ConvergeCmd (a shell command: resolve the newest versions,
+	// commit the lock, apply it) instead of updating binaries in place,
+	// which would drift the host from its lock. With no ConvergeCmd a
+	// fleet host refuses `!update`. LockFile, when set, is the
+	// dist.lock to compare against.
+	Fleet       bool
+	LockFile    string
+	ConvergeCmd string
+	// ConvergeWrap is an argv prefix for the converge job, e.g.
+	// `systemd-run --user --scope --quiet` so the job leaves the relay's
+	// cgroup and survives a hard restart of the relay's unit.
+	ConvergeWrap []string
+	// ConvergeTimeout bounds how long the job is watched. Default 30m.
+	// PollInterval is how often its rc file is checked. Default 2s.
+	ConvergeTimeout time.Duration
+	PollInterval    time.Duration
+	// Sleep waits d or until ctx is done. Default: a timer.
+	Sleep func(ctx context.Context, d time.Duration) error
+	// Logf logs errors that have no reply to go to. Optional.
+	Logf func(format string, args ...any)
 	// RelayLockKey / AgentLockKey are the dist.lock keys. Defaults:
 	// RelayName with "-" → "_", and AgentName.
 	RelayLockKey string
@@ -111,6 +129,10 @@ type Request struct {
 	Requester string // the relay's id for the sender, matched against Owners
 	Who       string // display name for the report; optional
 	Text      string // the raw message
+	// Post posts into the requesting conversation after Handle has
+	// returned. A fleet host's converge job reports through it when it
+	// ends without a reload.
+	Post func(text string) error
 }
 
 // Result is what the relay renders. When After is non-nil the relay
@@ -133,7 +155,7 @@ type Updater struct {
 const markerTTL = time.Hour
 
 // HelpLine is the `!help` bullet for this command.
-const HelpLine = "- `!update [fir|relay] [--check|--force|--rollback]` — owner only: update fir and/or the relay, then reload gracefully\n"
+const HelpLine = "- `!update [fir|relay] [--check|--force|--rollback]` — owner only: update fir and/or the relay, then reload gracefully (a fleet host runs its converge command)\n"
 
 // New constructs an Updater, filling defaults.
 func New(cfg Config) *Updater {
@@ -171,6 +193,15 @@ func New(cfg Config) *Updater {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.ConvergeTimeout == 0 {
+		cfg.ConvergeTimeout = 30 * time.Minute
+	}
+	if cfg.PollInterval == 0 {
+		cfg.PollInterval = 2 * time.Second
+	}
+	if cfg.Sleep == nil {
+		cfg.Sleep = defaultSleep
 	}
 	return &Updater{cfg: cfg}
 }
@@ -275,13 +306,26 @@ func (u *Updater) Handle(ctx context.Context, req Request) Result {
 	if op.Check {
 		return Result{Text: u.report(ctx)}
 	}
-	if u.cfg.Fleet && !op.Force {
-		return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock). Updating it from chat drifts it " +
-			"from its lock, and the next converge moves it back. Use converge, or repeat with `--force` " +
-			"if you mean it.\n\n" + u.report(ctx)}
-	}
 	if op.Force && (u.cfg.CancelAll == nil || u.cfg.WaitIdle == nil) {
 		return Result{Text: "❌ `--force` is not supported by this relay (it cannot cancel turns)."}
+	}
+	if u.cfg.Fleet {
+		switch {
+		case op.Rollback:
+			return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock): a rollback would drift it " +
+				"from its lock. Pin the older version in dist.lock and run `!update`.\n\n" + u.report(ctx)}
+		case u.cfg.ConvergeCmd == "":
+			return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock) and no converge command " +
+				"is configured, so `!update` cannot run here. Configure one, or run converge by hand.\n\n" + u.report(ctx)}
+		}
+		if err := u.acquire(); err != nil {
+			return Result{Text: "⏳ " + err.Error()}
+		}
+		res, started := u.converge(ctx, req, op)
+		if !started {
+			u.release()
+		}
+		return res
 	}
 	if op.Agent && u.cfg.AgentBin == "" {
 		return Result{Text: "❌ The agent binary is unknown here, so it cannot be updated."}
@@ -449,8 +493,10 @@ func (u *Updater) acquire() error {
 func (u *Updater) release() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.lock.Close()
-	u.lock = nil
+	if u.lock != nil {
+		u.lock.Close()
+		u.lock = nil
+	}
 }
 
 // report renders --check: versions on disk, running and locked.
@@ -522,6 +568,10 @@ type Marker struct {
 	OldRelay  string    `json:"old_relay"`
 	Rollback  bool      `json:"rollback,omitempty"`
 	At        time.Time `json:"at"`
+	// Converge marks a fleet host's converge job: the report waits for
+	// the job, not just for the reload. OldLock is dist.lock before it.
+	Converge bool              `json:"converge,omitempty"`
+	OldLock  map[string]string `json:"old_lock,omitempty"`
 }
 
 func (u *Updater) markerPath() string { return filepath.Join(u.cfg.StateDir, "update-marker.json") }
@@ -542,17 +592,19 @@ func (u *Updater) writeMarker(m Marker) error {
 // conversation cannot make every future start re-post). No marker is
 // not an error.
 func (u *Updater) Resume(ctx context.Context, post func(convID, text string) error) error {
-	b, err := os.ReadFile(u.markerPath())
+	m, err := readMarker(u.markerPath())
 	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err == nil && m.Converge && u.cfg.Now().Sub(m.At) <= markerTTL {
+		// The converge job reloaded us and may still be running: the
+		// watcher reports when it ends and removes the marker then.
+		go u.watch(ctx, u.convergeGone, func(text string) error { return post(m.ConvID, text) })
 		return nil
 	}
 	defer os.RemoveAll(u.markerPath())
 	if err != nil {
 		return err
-	}
-	var m Marker
-	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("update marker: %w", err)
 	}
 	if age := u.cfg.Now().Sub(m.At); age > markerTTL {
 		return fmt.Errorf("update marker is %s old; discarded without reporting", age.Round(time.Second))

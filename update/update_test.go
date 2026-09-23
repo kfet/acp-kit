@@ -20,6 +20,7 @@ type harness struct {
 	waitErr, reloadErr  error
 	agentErr, selfErr   error
 	versions            map[string]string
+	post                func(string) error
 }
 
 func newHarness(t *testing.T, mut func(*Config)) *harness {
@@ -60,7 +61,7 @@ func newHarness(t *testing.T, mut func(*Config)) *harness {
 }
 
 func (h *harness) do(text, who string) Result {
-	return h.u.Handle(context.Background(), Request{ConvID: "conv1", Requester: who, Who: "Kfet", Text: text})
+	return h.u.Handle(context.Background(), Request{ConvID: "conv1", Requester: who, Who: "Kfet", Text: text, Post: h.post})
 }
 
 func TestIsCommand(t *testing.T) {
@@ -154,18 +155,6 @@ func TestLockedEdgeCases(t *testing.T) {
 		if r := h.u.report(context.Background()); !strings.Contains(r, "| fir | ? | ? | — |") {
 			t.Fatal(r)
 		}
-	}
-}
-
-func TestFleetRefusal(t *testing.T) {
-	h := newHarness(t, func(c *Config) { c.Fleet = true })
-	r := h.do("!update", "42")
-	if !strings.Contains(r.Text, "fleet-managed") || r.After != nil || h.agentRuns != 0 {
-		t.Fatal(r.Text)
-	}
-	r = h.do("!update relay --force", "42")
-	if r.After == nil || h.selfRuns != 1 {
-		t.Fatal(r.Text)
 	}
 }
 
