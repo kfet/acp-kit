@@ -32,7 +32,11 @@ func parseAgentInfo(raw json.RawMessage) AgentInfo {
 }
 
 // AgentInfo returns what the agent reported about itself at Initialize.
-func (a *AgentProc) AgentInfo() AgentInfo { return a.agentInfo }
+func (a *AgentProc) AgentInfo() AgentInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.agentInfo
+}
 
 // Cost is a cumulative session cost, as the agent reported it.
 type Cost struct {

@@ -8,6 +8,18 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-27
+
+### Added
+
+- `client`: agent supervision, on by default. When the agent child exits unexpectedly the exit is logged (exit code or signal, uptime, and the last 50 lines of its stderr) and the agent is re-spawned with capped exponential backoff (`RespawnMin`/`RespawnMax`, default 1s..60s, reset after `RespawnHealthy`, default 60s), re-running initialize. Sessions the relay holds recover on their next use via `session/resume`, else `session/load` (its history replay muted), else a fresh `session/new` whose id is mapped back to the relay's. Calls made while the child is being replaced wait for it (bounded by their ctx). `Config.NoRespawn` keeps the old one-shot behaviour; `Config.Logger` receives the events; `AgentProc.Restarts` counts respawns.
+- `client`: `ErrAgentDied` — calls in flight when the child dies fail fast with it, wrapping the exit result, instead of hanging or surfacing `write |1: file already closed`. A child whose stdio breaks but which does not exit is killed so supervision can replace it.
+
+### Changed
+
+- `client`: with supervision on, `Done` closes only when the AgentProc is finished for good (`Close`, or the `Start` context ending), not on an unexpected exit.
+- `client`: child `cmd.WaitDelay` is set, so a grandchild holding the agent's stderr can no longer stall exit detection.
+
 ## [0.24.0] - 2026-09-24
 
 ### Added

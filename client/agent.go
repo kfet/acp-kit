@@ -24,8 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -166,6 +166,21 @@ type Config struct {
 	// kit-owned entries (e.g. "session.systemPrompt"); pick distinct
 	// extension ids to avoid clobber.
 	ClientMeta map[string]any
+
+	// NoRespawn disables supervision. By default an agent that exits
+	// unexpectedly is logged (exit status plus the tail of its stderr)
+	// and re-spawned with capped exponential backoff; sessions the relay
+	// holds are re-established on their next use. With NoRespawn the
+	// first exit is final: Done closes and every later call fails.
+	NoRespawn bool
+	// RespawnMin / RespawnMax bound the respawn backoff (defaults 1s and
+	// 60s); the delay doubles per consecutive failure. RespawnHealthy is
+	// how long a child must have run for the backoff to reset (default
+	// 60s).
+	RespawnMin, RespawnMax, RespawnHealthy time.Duration
+	// Logger receives supervision events (exit, respawn, session
+	// recovery). Nil means slog.Default().
+	Logger *slog.Logger
 }
 
 // AgentProc wraps a single stdio-connected ACP agent process and the ACP
@@ -173,20 +188,43 @@ type Config struct {
 type AgentProc struct {
 	cfg Config
 
-	cmd  *exec.Cmd
-	conn *acp.Connection
-	caps Caps
+	// ctx is the context Start was given. Every generation of the child
+	// is spawned under it, so cancelling it ends supervision too.
+	ctx context.Context
+	// respawn is true when this AgentProc owns a real child it may
+	// re-spawn after an unexpected exit (Start without NoRespawn).
+	respawn bool
 
-	// Process liveness. done is closed by the single reaper goroutine
-	// (see startReaper) once cmd.Wait has returned; exitErr holds the
-	// classified exit result, stored before done is closed. closing is
-	// set by Close before it signals the child, so the reaper can tell a
-	// deliberate shutdown from an unexpected death.
-	done    chan struct{}
-	exitErr atomic.Pointer[error]
-	closing atomic.Bool
+	// Final liveness. done is closed exactly once (finish) when the
+	// AgentProc is permanently gone: Close, the Start ctx ending, or —
+	// with NoRespawn — the first unexpected exit. exitErr holds the
+	// result, stored before done is closed. closing is set by Close
+	// before it signals the child, so exits can be classified as
+	// deliberate; closeCh wakes a supervisor sleeping in backoff.
+	done       chan struct{}
+	finishOnce sync.Once
+	exitErr    atomic.Pointer[error]
+	closing    atomic.Bool
+	closeCh    chan struct{}
+	closeOnce  sync.Once
+	restarts   atomic.Int64
+
+	// backoff is the current respawn delay. Only the (single, serial)
+	// supervisor goroutine touches it.
+	backoff time.Duration
 
 	mu     sync.Mutex
+	cur    *gen          // current child generation (never nil after connect)
+	genCh  chan struct{} // closed and replaced whenever cur is replaced
+	genSeq uint64        // generation counter
+	caps   Caps
+	// sess records every session the relay opened, keyed by the id the
+	// relay holds, so it can be re-established on a fresh child. alias
+	// maps a replacement wire id (session/new fallback) back to it;
+	// muted holds wire ids whose updates are a session/load replay.
+	sess   map[acp.SessionId]*sessRec
+	alias  map[acp.SessionId]acp.SessionId
+	muted  map[acp.SessionId]bool
 	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
 	models *modelState                         // cached model list (nil until first NewSession or Probe)
 
@@ -287,87 +325,6 @@ func (c Config) mcpFor(cwd string) []acp.McpServer {
 	return []acp.McpServer{}
 }
 
-// Start launches the agent process, performs Initialize (capturing caps),
-// and returns a ready-to-use AgentProc.
-func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
-	if len(cfg.Command) == 0 {
-		return nil, fmt.Errorf("client: empty Command")
-	}
-	if cfg.Policy == nil {
-		cfg.Policy = PermissionFunc(AllowAllPermissions)
-	}
-	if cfg.Cwd == "" {
-		cfg.Cwd = os.TempDir()
-	}
-
-	cmd := exec.CommandContext(ctx, cfg.Command[0], cfg.Command[1:]...) //nolint:gosec // user-configured command
-	cmd.Dir = cfg.Cwd
-	if env := cfg.scrubbedEnv(); env != nil {
-		cmd.Env = env
-	}
-	if cfg.Stderr != nil {
-		cmd.Stderr = cfg.Stderr
-	} else {
-		cmd.Stderr = os.Stderr
-	}
-	stdin, err := cmd.StdinPipe()
-	mustNot(err, "stdin pipe")
-	stdout, err := cmd.StdoutPipe()
-	mustNot(err, "stdout pipe")
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start agent: %w", err)
-	}
-	a, err := connect(ctx, cfg, cmd, stdin, stdout)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		return nil, err
-	}
-	return a, nil
-}
-
-// connect performs the post-spawn ACP handshake and returns a wired
-// AgentProc. Package-private; real callers go through Start. Tests use it to
-// drive the handshake against an in-process fake agent over io.Pipe pairs.
-func connect(ctx context.Context, cfg Config, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader) (*AgentProc, error) {
-	a := &AgentProc{
-		cfg:   cfg,
-		cmd:   cmd,
-		sinks: make(map[acp.SessionId]SessionUpdateSink),
-		stats: make(map[acp.SessionId]SessionStats),
-		done:  make(chan struct{}),
-	}
-	// Exactly one goroutine ever calls cmd.Wait. It starts before the
-	// handshake so a child that dies during Initialize is still reaped
-	// (and so Start's error path does not leak a zombie).
-	a.startReaper()
-	a.conn = acp.NewConnection(a.dispatch, stdin, stdout)
-
-	// Use a raw map for the response so we can read the unstable
-	// sessionCapabilities sub-object that the SDK's typed struct drops.
-	clientMeta := map[string]any{
-		"session.systemPrompt": map[string]any{"version": 1},
-	}
-	for k, v := range cfg.ClientMeta {
-		clientMeta[k] = v
-	}
-	initParams := acp.InitializeRequest{
-		ProtocolVersion: acp.ProtocolVersionNumber,
-		ClientCapabilities: acp.ClientCapabilities{
-			Fs:       acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
-			Terminal: false,
-			Meta:     clientMeta,
-		},
-	}
-	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodInitialize, initParams)
-	if err != nil {
-		return nil, fmt.Errorf("acp initialize: %w", err)
-	}
-	a.caps = parseCaps(raw)
-	a.authMethods = parseAuthMethods(raw)
-	a.agentInfo = parseAgentInfo(raw)
-	return a, nil
-}
-
 // parseAuthMethods extracts the authMethods array from a raw initialize
 // response. Reads only the fields the relay actually uses; extra _meta
 // is ignored.
@@ -426,7 +383,12 @@ func parseCaps(raw json.RawMessage) Caps {
 }
 
 // Caps returns the agent's advertised capabilities (parsed at Initialize).
-func (a *AgentProc) Caps() Caps { return a.caps }
+// It is refreshed each time the agent is re-spawned.
+func (a *AgentProc) Caps() Caps {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.caps
+}
 
 // NewSession creates a new ACP session and wires the given sink to receive
 // its updates. Returns the ACP session id.
@@ -466,10 +428,15 @@ func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink Ses
 		}
 		req.Meta = meta
 	}
-	resp, err := acp.SendRequest[sessionResponse](a.conn, ctx, acp.AgentMethodSessionNew, req)
+	g, err := a.live(ctx)
 	if err != nil {
 		return "", err
 	}
+	resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionNew, req)
+	if err != nil {
+		return "", err
+	}
+	a.track(resp.SessionId, cwd, req.Meta, g)
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
 	a.noteConfig(resp.SessionId, resp.ConfigOptions)
@@ -493,8 +460,12 @@ func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID str
 	if configID != "" {
 		return a.SetConfigOption(ctx, sid, configID, modelID)
 	}
-	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, agentMethodSessionSetModel, setSessionModelRequest{
-		SessionId: sid,
+	g, wire, err := a.route(ctx, sid)
+	if err != nil {
+		return err
+	}
+	_, err = rpc[json.RawMessage](ctx, g, agentMethodSessionSetModel, setSessionModelRequest{
+		SessionId: wire,
 		ModelId:   modelID,
 	})
 	return err
@@ -513,8 +484,12 @@ type setSessionConfigOptionRequest struct {
 // model selector on new-style agents, and for thinking_level and similar
 // dropdown-style knobs.
 func (a *AgentProc) SetConfigOption(ctx context.Context, sid acp.SessionId, configID, value string) error {
-	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodSessionSetConfigOption, setSessionConfigOptionRequest{
-		SessionId: sid,
+	g, wire, err := a.route(ctx, sid)
+	if err != nil {
+		return err
+	}
+	_, err = rpc[json.RawMessage](ctx, g, acp.AgentMethodSessionSetConfigOption, setSessionConfigOptionRequest{
+		SessionId: wire,
 		ConfigId:  configID,
 		Value:     value,
 	})
@@ -537,8 +512,12 @@ type releaseSessionRequest struct {
 // Returns a *acp.RequestError with code SessionNotFoundCode if the agent does
 // not hold the session (see IsSessionNotFound).
 func (a *AgentProc) ReleaseSession(ctx context.Context, sid acp.SessionId) error {
-	_, err := acp.SendRequest[json.RawMessage](a.conn, ctx, "session/release", releaseSessionRequest{
-		SessionId: sid,
+	g, wire, err := a.peek(ctx, sid)
+	if err != nil {
+		return err
+	}
+	_, err = rpc[json.RawMessage](ctx, g, "session/release", releaseSessionRequest{
+		SessionId: wire,
 	})
 	return err
 }
@@ -618,10 +597,7 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	// Drop the sink; the probe session is never prompted so it stays
 	// idle in the agent for the AgentProc's lifetime (no session/delete
 	// RPC exists). Cost: one map entry on the agent side.
-	a.mu.Lock()
-	delete(a.sinks, sid)
-	delete(a.stats, sid)
-	a.mu.Unlock()
+	a.DropSession(sid)
 	return nil
 }
 
@@ -631,7 +607,11 @@ func (noopSink) OnUpdate(context.Context, acp.SessionNotification) error { retur
 
 // ListSessions calls the unstable session/list. Caller must check Caps().ListSessions first.
 func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo, error) {
-	resp, err := acp.SendRequest[listSessionsResponse](a.conn, ctx, "session/list", listSessionsRequest{Cwd: cwd})
+	g, err := a.live(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := rpc[listSessionsResponse](ctx, g, "session/list", listSessionsRequest{Cwd: cwd})
 	if err != nil {
 		return nil, err
 	}
@@ -642,7 +622,11 @@ func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo
 // for the resumed session. Caller must check Caps().ResumeSession first.
 // The given sid is the agent-returned identifier (as listed by ListSessions).
 func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink) error {
-	resp, err := acp.SendRequest[sessionResponse](a.conn, ctx, "session/resume", resumeSessionRequest{
+	g, err := a.live(ctx)
+	if err != nil {
+		return err
+	}
+	resp, err := rpc[sessionResponse](ctx, g, "session/resume", resumeSessionRequest{
 		SessionId:  string(sid),
 		Cwd:        cwd,
 		McpServers: a.cfg.mcpFor(cwd),
@@ -650,6 +634,7 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	if err != nil {
 		return err
 	}
+	a.track(sid, cwd, nil, g)
 	a.mu.Lock()
 	a.sinks[sid] = sink
 	a.noteConfig(sid, resp.ConfigOptions)
@@ -676,8 +661,12 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 // the child's stdin, and a child wedged badly enough not to read it is
 // past helping. The prompt error is returned regardless.
 func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
-	resp, err := acp.SendRequest[acp.PromptResponse](a.conn, ctx, acp.AgentMethodSessionPrompt, acp.PromptRequest{
-		SessionId: sid,
+	g, wire, err := a.route(ctx, sid)
+	if err != nil {
+		return "", err
+	}
+	resp, err := rpc[acp.PromptResponse](ctx, g, acp.AgentMethodSessionPrompt, acp.PromptRequest{
+		SessionId: wire,
 		Prompt:    prompt,
 	})
 	if err != nil {
@@ -697,12 +686,18 @@ const cancelNotifyTimeout = 5 * time.Second
 
 // Cancel requests cancellation of an in-flight prompt for a session.
 func (a *AgentProc) Cancel(ctx context.Context, sid acp.SessionId) error {
-	return a.conn.SendNotification(ctx, acp.AgentMethodSessionCancel, acp.CancelNotification{SessionId: sid})
+	g, wire, err := a.peek(ctx, sid)
+	if err != nil {
+		return err
+	}
+	return g.conn.SendNotification(ctx, acp.AgentMethodSessionCancel, acp.CancelNotification{SessionId: wire})
 }
 
-// DropSession removes the sink for a session.
+// DropSession removes the sink for a session and forgets it for
+// respawn recovery.
 func (a *AgentProc) DropSession(sid acp.SessionId) {
 	a.mu.Lock()
+	a.untrackLocked(sid)
 	delete(a.sinks, sid)
 	delete(a.stats, sid)
 	a.mu.Unlock()
@@ -741,7 +736,11 @@ func (a *AgentProc) Authenticate(ctx context.Context, methodID, id, redirect str
 		"methodId": methodID,
 		"_meta":    map[string]any{"auth": authMeta},
 	}
-	raw, err := acp.SendRequest[json.RawMessage](a.conn, ctx, acp.AgentMethodAuthenticate, params)
+	g, err := a.live(ctx)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	raw, err := rpc[json.RawMessage](ctx, g, acp.AgentMethodAuthenticate, params)
 	if err != nil {
 		return AuthResult{}, err
 	}
@@ -778,111 +777,6 @@ func (a *AgentProc) AuthMethods() []AuthMethod {
 	out := make([]AuthMethod, len(a.authMethods))
 	copy(out, a.authMethods)
 	return out
-}
-
-// closeGentleSignal is the signal Close sends first. Overridable in tests so
-// the kill-fallback branch can be exercised with a child that ignores SIGINT.
-var closeGentleSignal os.Signal = os.Interrupt
-
-// ErrAgentClosed is the exit result reported by Err when the agent
-// process went away because Close asked it to. It is the marker for
-// "this death was expected"; anything else Err reports is an unexpected
-// exit that the relay should treat as an outage.
-var ErrAgentClosed = errors.New("acp agent closed")
-
-// ErrAgentExited is the exit result reported by Err when the agent
-// process exited on its own with status 0. It exists so Err is non-nil
-// for EVERY terminated agent — a clean exit is still an outage for a
-// relay that expected a long-lived child.
-var ErrAgentExited = errors.New("acp agent exited")
-
-// startReaper launches the one and only goroutine that calls cmd.Wait
-// for this AgentProc. A child that was never started (Process == nil —
-// the in-process fakes used by tests) has nothing to reap, so done stays
-// open and Err keeps reporting "still running".
-func (a *AgentProc) startReaper() {
-	if a.cmd == nil || a.cmd.Process == nil {
-		return
-	}
-	go a.reap()
-}
-
-// reap waits for the child, classifies the exit, publishes it and
-// releases everyone blocked on Done.
-//
-// It calls cmd.Wait — the one place that ever does — which also closes
-// the parent's ends of the stdio pipes. Anything the child wrote and the
-// ACP read loop has not consumed by then is lost. That is the same tail
-// truncation Close has always had, now also on the unexpected-exit path,
-// and it is the price of never leaking the pipe fds: an agent that dies
-// is not going to finish its response anyway.
-func (a *AgentProc) reap() {
-	err := a.cmd.Wait()
-	switch {
-	case a.closing.Load():
-		// Close (or a Close racing a spontaneous exit) — expected.
-		err = ErrAgentClosed
-	case err == nil:
-		err = ErrAgentExited
-	}
-	a.exitErr.Store(&err)
-	close(a.done)
-}
-
-// Done returns a channel that is closed once the agent process has
-// exited, for any reason. It never carries a value; call Err for the
-// exit result. Modelled on context.Context.Done/Err.
-//
-// A relay watches this to notice that its agent died out from under it:
-//
-//	go func() {
-//		<-agent.Done()
-//		if err := agent.Err(); !errors.Is(err, client.ErrAgentClosed) {
-//			log.Printf("agent exited unexpectedly: %v", err)
-//			os.Exit(1) // let the supervisor rebuild us
-//		}
-//	}()
-func (a *AgentProc) Done() <-chan struct{} { return a.done }
-
-// Err reports why the agent process is gone: nil while it is still
-// running, ErrAgentClosed after a Close, ErrAgentExited after a clean
-// self-exit, and otherwise the *exec.ExitError (or wait error) from the
-// child. It is safe to call concurrently at any time and never blocks,
-// so callers can use it to classify a failed ACP call as "the agent is
-// dead" rather than string-matching broken-pipe errors.
-func (a *AgentProc) Err() error {
-	if p := a.exitErr.Load(); p != nil {
-		return *p
-	}
-	return nil
-}
-
-// Close terminates the agent process. Returns after the process has
-// exited (or been force-killed). The exit itself is observed by the
-// single reaper goroutine — Close consumes that result via Done rather
-// than racing a second cmd.Wait.
-func (a *AgentProc) Close() error {
-	if a.cmd == nil || a.cmd.Process == nil {
-		return nil
-	}
-	// Mark the shutdown deliberate BEFORE signalling, so the reaper
-	// classifies the exit as ErrAgentClosed and no watcher mistakes an
-	// orderly stop for an outage.
-	a.closing.Store(true)
-	// Try a gentle stop first; fall through to Kill after a short grace.
-	grace := a.cfg.CloseGrace
-	if grace <= 0 {
-		grace = 2 * time.Second
-	}
-	_ = a.cmd.Process.Signal(closeGentleSignal)
-	select {
-	case <-a.done:
-		return nil
-	case <-time.After(grace):
-		_ = a.cmd.Process.Kill()
-		<-a.done
-		return nil
-	}
 }
 
 // ---- Inbound dispatch (server-initiated calls from the agent) ----
@@ -969,6 +863,11 @@ func (a *AgentProc) sessionUpdate(ctx context.Context, params acp.SessionNotific
 		a.availableCommands = cmds
 		a.mu.Unlock()
 	}
+	sid, ok := a.callerFor(params.SessionId)
+	if !ok {
+		return nil // session/load history replay during recovery
+	}
+	params.SessionId = sid
 	a.noteUpdate(params.SessionId, params.Update)
 	if s := a.sinkFor(params.SessionId); s != nil {
 		return s.OnUpdate(ctx, params)

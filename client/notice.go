@@ -67,7 +67,7 @@ type NoticeSink interface {
 // unconditionally — but it is useful for deciding whether the agent will
 // report retries at all, versus silently stalling.
 func (a *AgentProc) AgentSupportsNotices() bool {
-	return a.caps.Notices
+	return a.Caps().Notices
 }
 
 // handleNotice decodes a NoticeMethod notification and hands it to the
@@ -80,6 +80,11 @@ func (a *AgentProc) handleNotice(ctx context.Context, params json.RawMessage) {
 	if err := json.Unmarshal(params, &n); err != nil {
 		return
 	}
+	sid, live := a.callerFor(n.SessionId)
+	if !live {
+		return
+	}
+	n.SessionId = sid
 	sink, ok := a.sinkFor(n.SessionId).(NoticeSink)
 	if !ok {
 		return

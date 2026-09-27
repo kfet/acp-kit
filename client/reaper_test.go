@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"testing"
@@ -22,8 +23,10 @@ func reapedProc(t *testing.T, argv ...string) *AgentProc {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %v: %v", argv, err)
 	}
-	a := &AgentProc{cmd: cmd, done: make(chan struct{})}
-	a.startReaper()
+	a := newProc(context.Background(), Config{Logger: discardLogger()})
+	g := &gen{cmd: cmd, started: time.Now(), done: make(chan struct{})}
+	a.cur = g
+	a.startReaper(g)
 	return a
 }
 
@@ -53,8 +56,10 @@ func TestReaperFailedExitCarriesExitError(t *testing.T) {
 // A never-started child has nothing to reap: Done stays open, Err reports
 // "still running", and Close is a no-op. This is the in-process fake case.
 func TestReaperNoProcess(t *testing.T) {
-	a := &AgentProc{cmd: &exec.Cmd{}, done: make(chan struct{})}
-	a.startReaper()
+	a := newProc(context.Background(), Config{})
+	g := &gen{cmd: &exec.Cmd{}, done: make(chan struct{})}
+	a.cur = g
+	a.startReaper(g)
 	select {
 	case <-a.Done():
 		t.Fatal("Done closed for a never-started child")
@@ -113,16 +118,18 @@ func TestUnexpectedAgentDeathIsObservable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	a, err := Start(ctx, Config{
-		Command: []string{exe, "-test.run", "^$"},
-		Env:     append(os.Environ(), fakeAgentEnv+"=1"),
-		Stderr:  io.Discard,
+		Command:   []string{exe, "-test.run", "^$"},
+		Env:       append(os.Environ(), fakeAgentEnv+"=1"),
+		NoRespawn: true,
+		Logger:    discardLogger(),
+		Stderr:    io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Close() })
 
-	if err := a.cmd.Process.Kill(); err != nil {
+	if err := a.cur.cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
 	<-a.Done()
@@ -138,3 +145,5 @@ func TestUnexpectedAgentDeathIsObservable(t *testing.T) {
 		t.Fatal("NewSession on a dead agent: want error")
 	}
 }
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
