@@ -402,3 +402,42 @@ func TestCapabilitiesReachBroker(t *testing.T) {
 		t.Fatal("capabilities not wired")
 	}
 }
+
+// modelAgent reports a model per session.
+type modelAgent struct {
+	fakeAgent
+	per map[acp.SessionId]string
+}
+
+func (a *modelAgent) CurrentModel(sid acp.SessionId) (string, bool) {
+	m, ok := a.per[sid]
+	return m, ok
+}
+
+// TestEffectiveModelPerSession: with no override, a conversation
+// reports its own session's model, not the process-wide current (the
+// model of whichever session was opened last).
+func TestEffectiveModelPerSession(t *testing.T) {
+	a := &modelAgent{fakeAgent: fakeAgent{current: "p/last"},
+		per: map[acp.SessionId]string{"s1": "p/one", "s2": "p/two"}}
+	ss := &fakeSessions{live: map[string]acp.SessionId{"c1": "s1", "c2": "s2", "c3": "s3"}}
+	m := newM(t, Config{Agent: a, Sessions: ss})
+	for conv, want := range map[string]string{"c1": "p/one", "c2": "p/two", "c3": "p/last", "gone": "p/last"} {
+		if got := m.EffectiveModel(conv); got != want {
+			t.Errorf("EffectiveModel(%s) = %q, want %q", conv, got, want)
+		}
+	}
+	if st := m.Controller().StatusFor("c2"); st.EffectiveModel != "p/two" || st.DefaultModel != "p/last" {
+		t.Errorf("status %+v", st)
+	}
+	m.ov.Set("c1", "p/ov")
+	if got := m.EffectiveModel("c1"); got != "p/ov" {
+		t.Errorf("override lost: %q", got)
+	}
+	// No Sessions: nothing to look up.
+	if got := newM(t, Config{Agent: a}).EffectiveModel("c1"); got != "p/last" {
+		t.Errorf("no sessions: %q", got)
+	}
+}
+
+var _ ModelReporter = (*client.AgentProc)(nil)

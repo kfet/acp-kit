@@ -57,6 +57,14 @@ type ModelSetter interface {
 	SetModel(ctx context.Context, sid acp.SessionId, modelID string) error
 }
 
+// ModelReporter reports the model one session is running.
+// *client.AgentProc satisfies it. Without it, a conversation with no
+// override reports Models' current, which is process-wide: the model
+// of whichever session was opened last.
+type ModelReporter interface {
+	CurrentModel(sid acp.SessionId) (string, bool)
+}
+
 // Informer reports the agent's identity (`!status`).
 type Informer interface{ AgentInfo() client.AgentInfo }
 
@@ -433,13 +441,31 @@ func (m *Manager) ApplyModel(ctx context.Context, conv string, sid acp.SessionId
 	m.ov.MarkApplied(conv, id, sid)
 }
 
-// EffectiveModel is conv's override, else the agent's current model.
+// EffectiveModel is conv's override, else the model conv's live
+// session reports (see ModelReporter), else the agent's current model.
 func (m *Manager) EffectiveModel(conv string) string {
 	if id, ok := m.ov.Get(conv); ok {
 		return id
 	}
+	if id := m.sessionModel(conv); id != "" {
+		return id
+	}
 	_, cur := m.cfg.Agent.Models()
 	return cur
+}
+
+// sessionModel is the model conv's live session reports, or "".
+func (m *Manager) sessionModel(conv string) string {
+	mr, ok := m.cfg.Agent.(ModelReporter)
+	if !ok || m.cfg.Sessions == nil {
+		return ""
+	}
+	sid, _, live := m.cfg.Sessions.Live(conv)
+	if !live {
+		return ""
+	}
+	id, _ := mr.CurrentModel(sid)
+	return id
 }
 
 // --- command.Controller -------------------------------------------------
@@ -516,6 +542,8 @@ func (c controller) StatusFor(token string) command.SessionStatus {
 	if ok {
 		if id, has := c.m.ov.Get(conv); has {
 			st.OverrideModel, st.EffectiveModel = id, id
+		} else if id := c.m.sessionModel(conv); id != "" {
+			st.EffectiveModel = id
 		}
 		// Only a relay that can stop a turn reports one running: the
 		// status line offers `!stop` for it.

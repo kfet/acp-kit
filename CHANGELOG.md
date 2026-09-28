@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-28
+
+### Fixed
+
+- `convo`: `Manager.EffectiveModel` and `!status` name the model of the conversation's live session when there is no override, through the new optional `ModelReporter` agent capability (`*client.AgentProc` has it via `CurrentModel`). They used `Models()`' process-wide current, the model of whichever session was opened last.
+
 ## [0.26.0] - 2026-09-28
 
 ### Added
