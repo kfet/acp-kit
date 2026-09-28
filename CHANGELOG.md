@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-28
+
+### Added
+
+- `client`: `AgentProc.CurrentModel(sid)` — the model a given session is running, tracked per session from session/new, session/resume, respawn re-establishment, agent config-option updates and successful `SetModel` calls; forgotten on `DropSession`. `Models()` still returns the list and the process-wide current (the model of whichever session was opened last), unchanged.
+
 ## [0.25.0] - 2026-09-27
 
 ### Added

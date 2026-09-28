@@ -97,6 +97,9 @@ func (a *AgentProc) noteUpdate(sid acp.SessionId, u acp.SessionUpdate) {
 	}
 	if c := u.ConfigOptionUpdate; c != nil {
 		a.noteConfig(sid, c.ConfigOptions)
+		if ms := modelsFromConfigOptions(c.ConfigOptions); ms != nil && ms.current != "" {
+			a.curModel[sid] = ms.current
+		}
 	}
 	if uu := u.UsageUpdate; uu != nil {
 		st := a.stats[sid]

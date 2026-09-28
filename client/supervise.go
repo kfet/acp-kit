@@ -120,16 +120,17 @@ type sessRec struct {
 // newProc builds an AgentProc with no child attached yet.
 func newProc(ctx context.Context, cfg Config) *AgentProc {
 	return &AgentProc{
-		cfg:     cfg,
-		ctx:     ctx,
-		sinks:   make(map[acp.SessionId]SessionUpdateSink),
-		stats:   make(map[acp.SessionId]SessionStats),
-		sess:    make(map[acp.SessionId]*sessRec),
-		alias:   make(map[acp.SessionId]acp.SessionId),
-		muted:   make(map[acp.SessionId]bool),
-		done:    make(chan struct{}),
-		closeCh: make(chan struct{}),
-		genCh:   make(chan struct{}),
+		cfg:      cfg,
+		ctx:      ctx,
+		sinks:    make(map[acp.SessionId]SessionUpdateSink),
+		stats:    make(map[acp.SessionId]SessionStats),
+		curModel: make(map[acp.SessionId]string),
+		sess:     make(map[acp.SessionId]*sessRec),
+		alias:    make(map[acp.SessionId]acp.SessionId),
+		muted:    make(map[acp.SessionId]bool),
+		done:     make(chan struct{}),
+		closeCh:  make(chan struct{}),
+		genCh:    make(chan struct{}),
 	}
 }
 
@@ -676,9 +677,7 @@ func (a *AgentProc) adopt(sid acp.SessionId, rec *sessRec, g *gen, wire acp.Sess
 	rec.wire = wire
 	rec.gen = g.n
 	a.noteConfig(sid, resp.ConfigOptions)
-	if ms := resp.modelState(); ms != nil {
-		a.models = ms
-	}
+	a.noteModels(sid, resp.modelState())
 }
 
 // stderrTail is an io.Writer keeping the last n lines written to it.

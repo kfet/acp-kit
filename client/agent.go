@@ -227,6 +227,10 @@ type AgentProc struct {
 	muted  map[acp.SessionId]bool
 	sinks  map[acp.SessionId]SessionUpdateSink // active session sinks
 	models *modelState                         // cached model list (nil until first NewSession or Probe)
+	// curModel is each session's current model id, keyed by the id the
+	// relay holds. models.current is process-wide and names whichever
+	// session was opened last; this is per session. See CurrentModel.
+	curModel map[acp.SessionId]string
 
 	authMethods []AuthMethod // parsed from initialize response
 	agentInfo   AgentInfo    // parsed from initialize response
@@ -440,9 +444,7 @@ func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink Ses
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
 	a.noteConfig(resp.SessionId, resp.ConfigOptions)
-	if ms := resp.modelState(); ms != nil {
-		a.models = ms
-	}
+	a.noteModels(resp.SessionId, resp.modelState())
 	a.mu.Unlock()
 	return resp.SessionId, nil
 }
@@ -457,9 +459,24 @@ func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID str
 		configID = a.models.configID
 	}
 	a.mu.Unlock()
+	var err error
 	if configID != "" {
-		return a.SetConfigOption(ctx, sid, configID, modelID)
+		err = a.SetConfigOption(ctx, sid, configID, modelID)
+	} else {
+		err = a.setModelLegacy(ctx, sid, modelID)
 	}
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if _, ok := a.sinks[sid]; ok {
+		a.curModel[sid] = modelID
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *AgentProc) setModelLegacy(ctx context.Context, sid acp.SessionId, modelID string) error {
 	g, wire, err := a.route(ctx, sid)
 	if err != nil {
 		return err
@@ -469,6 +486,32 @@ func (a *AgentProc) SetModel(ctx context.Context, sid acp.SessionId, modelID str
 		ModelId:   modelID,
 	})
 	return err
+}
+
+// noteModels records a session response's model state: the
+// process-wide list Models() serves, and sid's own current model.
+// a.mu held. A nil ms is a no-op.
+func (a *AgentProc) noteModels(sid acp.SessionId, ms *modelState) {
+	if ms == nil {
+		return
+	}
+	a.models = ms
+	if ms.current != "" {
+		a.curModel[sid] = ms.current
+	}
+}
+
+// CurrentModel returns the model id session sid is running, as last
+// reported by the agent for that session (session/new, session/resume,
+// respawn re-establishment, a config option update) or set by a
+// successful SetModel. sid is the id the relay holds, not a respawn
+// wire alias. ok is false when the session's model is unknown; callers
+// may then fall back to the process-wide current from Models().
+func (a *AgentProc) CurrentModel(sid acp.SessionId) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m, ok := a.curModel[sid]
+	return m, ok
 }
 
 // setSessionConfigOptionRequest is the params for session/set_config_option.
@@ -638,9 +681,7 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	a.mu.Lock()
 	a.sinks[sid] = sink
 	a.noteConfig(sid, resp.ConfigOptions)
-	if ms := resp.modelState(); ms != nil {
-		a.models = ms
-	}
+	a.noteModels(sid, resp.modelState())
 	a.mu.Unlock()
 	return nil
 }
@@ -700,6 +741,7 @@ func (a *AgentProc) DropSession(sid acp.SessionId) {
 	a.untrackLocked(sid)
 	delete(a.sinks, sid)
 	delete(a.stats, sid)
+	delete(a.curModel, sid)
 	a.mu.Unlock()
 }
 
