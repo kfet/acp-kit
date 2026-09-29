@@ -205,10 +205,10 @@ func (b *Broker) Status(convID string) (string, error) {
 }
 
 // MatchModels selects the models a `!model <filter>` listing names, in
-// the order the agent reported them. An empty filter matches
-// everything; otherwise the match is a case-insensitive substring of
-// the model ID. The result is always a fresh slice, never an alias of
-// all.
+// ranked order. An empty filter matches everything (agent order);
+// otherwise the fuzzy ResolveModel candidates win, falling back to a
+// case-insensitive substring of the model ID when nothing resolves.
+// The result is always a fresh slice, never an alias of all.
 //
 // Exported because a relay may render the SAME selection onto a
 // surface this package cannot know about — zulip-acp narrows its
@@ -219,6 +219,11 @@ func (b *Broker) Status(convID string) (string, error) {
 // ModelList itself uses it.
 func MatchModels(all []client.ModelInfo, filter string) []client.ModelInfo {
 	f := strings.ToLower(strings.TrimSpace(filter))
+	if f != "" {
+		if _, c := ResolveModel(all, filter); len(c) > 0 {
+			return c
+		}
+	}
 	matched := make([]client.ModelInfo, 0, len(all))
 	for _, m := range all {
 		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {

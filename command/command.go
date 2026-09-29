@@ -361,6 +361,14 @@ func foldVerb(body string) string {
 	return strings.ToLower(body[:i]) + body[i:]
 }
 
+// isModelBody reports whether body is `model` or its `m` alias, bare or
+// followed by a space and an argument. Only a space separates: `m\tx`,
+// `me` and `msg` are not model commands.
+func isModelBody(body string) bool {
+	verb, _, _ := strings.Cut(body, " ")
+	return verb == "model" || verb == "m"
+}
+
 // isLoginBody reports whether a sigil-stripped command body is one of the
 // login-family commands.
 func isLoginBody(body string) bool {
@@ -412,7 +420,7 @@ func (b *Broker) isSessionBody(body string) bool {
 		return true
 	case body == "models" || strings.HasPrefix(body, "models "):
 		return true
-	case body == "model" || strings.HasPrefix(body, "model "):
+	case isModelBody(body):
 		return true
 	case body == "new" || body == "reset":
 		return true
@@ -505,8 +513,9 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	case body == "models" || strings.HasPrefix(body, "models "):
 		// Undocumented alias: !models folded into !model.
 		return b.models(strings.TrimSpace(strings.TrimPrefix(body, "models"))), nil
-	case body == "model" || strings.HasPrefix(body, "model "):
-		return b.model(convID, strings.TrimSpace(strings.TrimPrefix(body, "model"))), nil
+	case isModelBody(body):
+		_, arg, _ := strings.Cut(body, " ")
+		return b.model(convID, strings.TrimSpace(arg)), nil
 	case body == "new" || body == "reset":
 		return b.reset(convID), nil
 	case body == "schedules" || body == "schedule":
@@ -554,7 +563,7 @@ func (b *Broker) help() *Outcome {
 	sb.WriteString("- `" + s + "help` — show this message\n")
 	if b.ctrl != nil {
 		sb.WriteString("- `" + s + "status` — model, session and relay info\n")
-		sb.WriteString("- `" + s + "model [filter|id]` — list/filter models, or switch\n")
+		sb.WriteString("- `" + s + "model [filter|id]` (or `" + s + "m`) — list/filter models, or switch; fuzzy ids like `anth/opus55` work\n")
 		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
 		if _, ok := b.stopper(); ok {
 			sb.WriteString("- `" + s + "stop` — interrupt the turn currently running\n")
@@ -626,10 +635,10 @@ func capitalise(s string) string {
 //	arg == model id → switch this chat to it
 //	anything else   → treat the arg as a list filter
 //
-// Exact-id match wins over the filter reading, so a model id that also
-// happens to be a substring of other ids still switches. A filter that
-// narrows to exactly one model deliberately does NOT auto-switch —
-// silently changing model off an approximate match would be surprising.
+// The arg goes through ResolveModel: an exact id switches; a fuzzy query
+// with exactly one best candidate switches too, and the reply echoes
+// the full id so an approximate match is never silent; anything else
+// lists what the filter matches.
 func (b *Broker) model(convID, arg string) *Outcome {
 	if b.ctrl == nil {
 		return &Outcome{Text: "Session control is unavailable."}
@@ -638,10 +647,14 @@ func (b *Broker) model(convID, arg string) *Outcome {
 		return b.models("")
 	}
 	all, _ := b.ctrl.AvailableModels()
-	for _, m := range all {
-		if m.ID == arg {
-			return b.setModel(convID, arg)
-		}
+	exact, cands := ResolveModel(all, arg)
+	if exact {
+		return b.setModel(convID, arg)
+	}
+	if len(cands) == 1 {
+		o := b.setModel(convID, cands[0].ID)
+		o.Text = fmt.Sprintf("`%s` → `%s`\n", arg, cands[0].ID) + o.Text
+		return o
 	}
 	return b.models(arg)
 }

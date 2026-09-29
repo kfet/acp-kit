@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-29
+
+### Added
+
+- `command`: `ResolveModel` fuzzily resolves a model query (`anth/opus55` → `anthropic/claude-opus-5-5`): split on `/` into provider and model, letter runs match as ordered subsequences, digit runs by prefix of a whole run, date stamps are ignored; results are ranked by tier, span, then id length. `MatchModels` uses it, falling back to substring.
+- `!model <query>` switches when the query resolves to exactly one best candidate, echoing the full id; ambiguous queries list the candidates.
+- `!m` alias for `!model`.
+
 ## [0.27.0] - 2026-09-28
 
 ### Fixed

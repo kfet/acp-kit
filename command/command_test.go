@@ -588,10 +588,14 @@ func TestMatchModels(t *testing.T) {
 	if got := MatchModels(all, ""); len(got) != 3 || got[0].ID != all[0].ID {
 		t.Fatalf("empty filter = %v, want all three in order", got)
 	}
-	// Case-insensitive substring, on the ID, preserving order.
+	// Fuzzy, case-insensitive, ranked (tie → shorter id first).
 	got := MatchModels(all, "OpUs")
-	if len(got) != 2 || got[0].ID != "anthropic/claude-opus-4-5" || got[1].ID != "openai/GPT-5-OPUS" {
-		t.Fatalf("opus filter = %v, want both opus ids in agent order", got)
+	if len(got) != 2 || got[0].ID != "openai/GPT-5-OPUS" || got[1].ID != "anthropic/claude-opus-4-5" {
+		t.Fatalf("opus filter = %v, want both opus ids ranked", got)
+	}
+	// Nothing resolves fuzzily → plain substring fallback.
+	if got := MatchModels(all, "c/cl"); len(got) != 2 {
+		t.Fatalf("substring fallback = %v, want the two anthropic ids", got)
 	}
 	// Surrounding whitespace is not part of the filter.
 	if got := MatchModels(all, "  sonnet "); len(got) != 1 || got[0].ID != "anthropic/claude-sonnet-4-5" {
@@ -629,13 +633,16 @@ func TestModelCommand(t *testing.T) {
 	if c.lastSet != [2]string{} {
 		t.Fatalf("filter must not switch model, got %v", c.lastSet)
 	}
-	// filter matching exactly one model still lists, never auto-switches
-	g = hb(b, "!model other")
-	if !strings.Contains(g, "p/other") || strings.Contains(g, "✅") {
-		t.Fatalf("single-match filter must list, not switch: %s", g)
+	// a fuzzy query with one best candidate switches, echoing the full id
+	g = hb(b, "!m oth")
+	if !strings.Contains(g, "`oth` → `p/other`") || !strings.Contains(g, "✅") || c.lastSet != [2]string{"c1", "p/other"} {
+		t.Fatalf("unique fuzzy match must switch: %s last=%v", g, c.lastSet)
 	}
-	if c.lastSet != [2]string{} {
-		t.Fatalf("single-match filter must not switch, got %v", c.lastSet)
+	c.lastSet = [2]string{}
+	// ambiguous fuzzy query (same model, two providers) lists, no switch
+	g = hb(b, "!model m")
+	if !strings.Contains(g, "p/m") || !strings.Contains(g, "q/m") || strings.Contains(g, "✅") || c.lastSet != [2]string{} {
+		t.Fatalf("ambiguous must list: %s last=%v", g, c.lastSet)
 	}
 	// no match → none-match hint
 	if g := hb(b, "!model zzz"); !strings.Contains(g, "none match") {
