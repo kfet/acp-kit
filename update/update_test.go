@@ -480,3 +480,20 @@ func TestRestart(t *testing.T) {
 		}
 	}
 }
+
+// A package manager (Homebrew) can delete the agent's directory during
+// its update. Promoting .prev then fails; that must be reported, not panic.
+func TestAgentDirRemovedDuringUpdate(t *testing.T) {
+	var h *harness
+	h = newHarness(t, func(c *Config) {
+		c.UpdateAgent = func(context.Context) (string, error) {
+			h.versions[h.bin] = "2.0.0"
+			return "ok", os.RemoveAll(h.dir)
+		}
+		c.StateDir = t.TempDir()
+	})
+	r := h.do("!update fir", "42")
+	if !strings.Contains(r.Text, "no `.prev` copy was kept") || r.After == nil {
+		t.Fatalf("got %q", r.Text)
+	}
+}

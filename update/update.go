@@ -408,7 +408,13 @@ func (u *Updater) run(ctx context.Context, req Request, op Op) Result {
 			return Result{Text: fmt.Sprintf("❌ `%s update` failed: %v\n%s", u.cfg.AgentName, err, fence(out))}
 		}
 		if u.cfg.Version(ctx, u.cfg.AgentBin) != before {
-			mustNot(os.Rename(cand, u.cfg.AgentBin+".prev"), "promote .prev")
+			// The agent's own updater may have moved or deleted the
+			// directory (e.g. Homebrew drops the old Cellar version), so
+			// this can fail. Report it; never crash the relay.
+			if err := os.Rename(cand, u.cfg.AgentBin+".prev"); err != nil {
+				os.Remove(cand)
+				fmt.Fprintf(&log, "⚠️ `%s` was updated, but no `.prev` copy was kept: %v\n", u.cfg.AgentName, err)
+			}
 		} else {
 			os.Remove(cand)
 		}
