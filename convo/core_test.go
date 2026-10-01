@@ -245,13 +245,13 @@ func TestFileStore(t *testing.T) {
 	}
 }
 
-func TestMustJSONPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("no panic")
-		}
-	}()
-	mustJSONWith(func(any) ([]byte, error) { return nil, errors.New("x") }, nil)
+func TestSaveMarshalError(t *testing.T) {
+	old := marshalJSON
+	t.Cleanup(func() { marshalJSON = old })
+	marshalJSON = func(any) ([]byte, error) { return nil, errors.New("x") }
+	if err := (&FileStore{Path: filepath.Join(t.TempDir(), "t.json")}).Save("a", "b"); err == nil {
+		t.Fatal("want marshal error")
+	}
 }
 
 // --- active ---------------------------------------------------------------

@@ -47,6 +47,7 @@ package schedule
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -472,7 +473,7 @@ func (s *Store) countLocked(conv string) int {
 func (s *Store) newIDLocked() string {
 	for {
 		var b [4]byte
-		mustRandom(b[:])
+		_, _ = rand.Read(b[:]) // never fails since Go 1.24
 		id := "s" + hex.EncodeToString(b[:])
 		if _, taken := s.items[id]; !taken {
 			return id
@@ -509,7 +510,11 @@ func (s *Store) saveLocked() error {
 		items = append(items, *it)
 	}
 	sortItems(items)
-	b := append(mustMarshal(file{Version: currentVersion, Items: items}), '\n')
+	b, err := marshalIndent(file{Version: currentVersion, Items: items}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("schedule: marshal: %w", err)
+	}
+	b = append(b, '\n')
 	if err := os.MkdirAll(filepath.Dir(s.cfg.Path), 0o755); err != nil {
 		return fmt.Errorf("schedule: mkdir: %w", err)
 	}
@@ -522,3 +527,6 @@ func (s *Store) saveLocked() error {
 	}
 	return nil
 }
+
+// marshalIndent is a seam so tests can make the marshal fail.
+var marshalIndent = json.MarshalIndent

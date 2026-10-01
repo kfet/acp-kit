@@ -164,6 +164,14 @@ func Start(ctx context.Context, cfg Config) (*AgentProc, error) {
 
 // spawn starts one child generation and, once initialize succeeded,
 // installs it as current. On failure the child is killed and reaped.
+// Seams so tests can make pipe creation fail.
+var (
+	stdinPipe  = (*exec.Cmd).StdinPipe
+	stdoutPipe = (*exec.Cmd).StdoutPipe
+)
+
+// spawn starts one child generation and, once initialize succeeded,
+// installs it as current. On failure the child is killed and reaped.
 func (a *AgentProc) spawn(ctx context.Context) error {
 	cfg := a.cfg
 	cmd := exec.CommandContext(a.ctx, cfg.Command[0], cfg.Command[1:]...) //nolint:gosec // user-configured command
@@ -178,10 +186,15 @@ func (a *AgentProc) spawn(ctx context.Context) error {
 	tail := newStderrTail(stderrTailLines)
 	cmd.Stderr = io.MultiWriter(dst, tail)
 	cmd.WaitDelay = waitDelay
-	stdin, err := cmd.StdinPipe()
-	mustNot(err, "stdin pipe")
-	stdout, err := cmd.StdoutPipe()
-	mustNot(err, "stdout pipe")
+	stdin, err := stdinPipe(cmd)
+	if err != nil {
+		return fmt.Errorf("agent stdin pipe: %w", err)
+	}
+	stdout, err := stdoutPipe(cmd)
+	if err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("agent stdout pipe: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}

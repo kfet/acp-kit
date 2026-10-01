@@ -221,7 +221,10 @@ func (s *SSH) Push(ctx context.Context, src, dstParent string) error {
 	// os/exec's copier goroutine blocked forever on a write no one will
 	// read, and WaitDelay cannot break it because the block is in the
 	// io.Pipe, not in a file descriptor.
-	rd := mustPipe(tarCmd.StdoutPipe())
+	rd, err := stdoutPipe(tarCmd)
+	if err != nil {
+		return fmt.Errorf("push %s: stdout pipe: %w", src, err)
+	}
 	sshCmd.Stdin = rd
 
 	var tarErrBuf, sshErrBuf strings.Builder
@@ -279,7 +282,10 @@ func (s *SSH) Fetch(ctx context.Context, remotePath, dstDir string) (string, err
 	sshCmd := exec.CommandContext(ctx, "ssh", s.sshArgv(remote)...)
 	tarCmd := exec.CommandContext(ctx, "tar", "-x", "-f", "-", "-C", dstDir)
 
-	rd := mustPipe(sshCmd.StdoutPipe())
+	rd, err := stdoutPipe(sshCmd)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s: stdout pipe: %w", remotePath, err)
+	}
 	tarCmd.Stdin = rd
 
 	var sshErrBuf, tarErrBuf strings.Builder
@@ -371,3 +377,6 @@ func (c *capped) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// stdoutPipe is a seam so tests can make pipe creation fail.
+var stdoutPipe = (*exec.Cmd).StdoutPipe

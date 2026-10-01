@@ -200,8 +200,15 @@ func (f *FileStore) Save(conv, id string) error {
 		return err
 	}
 	tmp := f.Path + ".tmp"
-	if err := os.WriteFile(tmp, mustJSON(m), 0o600); err != nil {
+	b, err := marshalJSON(m)
+	if err != nil {
+		return fmt.Errorf("convo: marshal overrides: %w", err)
+	}
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, f.Path)
 }
+
+// marshalJSON is a seam so tests can make the marshal fail.
+var marshalJSON = json.Marshal

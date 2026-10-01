@@ -52,6 +52,7 @@
 package mcphost
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -409,7 +410,11 @@ func (h *Host) Listen() error {
 	// Close does the removal explicitly instead. net.Listen("unix", …)
 	// always yields a *net.UnixListener.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
-	mustChmod(h.socket)
+	if err := chmod(h.socket, 0o600); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(h.socket)
+		return fmt.Errorf("mcphost: chmod socket: %w", err)
+	}
 	h.ln = ln
 	h.wg.Add(1)
 	go h.serve()
@@ -505,10 +510,13 @@ func (h *Host) shutdown() {
 	h.wg.Wait()
 }
 
-// newToken returns a 16-byte random hex token. crypto/rand failure is
-// fatal-grade and handled in mcphost_must.go.
+// chmod is a seam so tests can make it fail.
+var chmod = os.Chmod
+
+// newToken returns a 16-byte random hex token. Since Go 1.24,
+// crypto/rand.Read never returns an error.
 func newToken() string {
 	b := make([]byte, 16)
-	mustRand(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

@@ -629,7 +629,9 @@ func (a *AgentProc) ProbeModels(ctx context.Context) error {
 	a.mu.Unlock()
 
 	probeCwd, err := os.MkdirTemp("", "acp-kit-probe-*")
-	mustNot(err, "probe mkdir tmp")
+	if err != nil {
+		return fmt.Errorf("probe models: %w", err)
+	}
 	defer os.RemoveAll(probeCwd)
 
 	// Use a noop sink — we don't care about updates.

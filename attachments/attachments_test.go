@@ -242,7 +242,7 @@ func TestOpenMessageDirAlreadyExists(t *testing.T) {
 	}
 }
 
-func TestOpenMessageDirMkdirAtErrorPanics(t *testing.T) {
+func TestOpenMessageDirMkdirError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission test requires non-root")
 	}
@@ -256,12 +256,48 @@ func TestOpenMessageDirMkdirAtErrorPanics(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(base, 0o755) })
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic via mustMkdirAt")
-		}
-	}()
-	_, _ = (Store{}).openMessageDir(cwd, "m2")
+	if _, err := (Store{}).openMessageDir(cwd, "m2"); err == nil {
+		t.Fatal("expected Mkdir error")
+	}
+}
+
+func TestOpenMessageDirOpenRootError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission test requires non-root")
+	}
+	cwd := t.TempDir()
+	base := filepath.Join(cwd, DefaultDirName)
+	if err := os.Mkdir(base, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o755) })
+	if _, err := (Store{}).openMessageDir(cwd, "m1"); err == nil {
+		t.Fatal("expected OpenRoot error")
+	}
+}
+
+func TestWriteFallbackOpenError(t *testing.T) {
+	old := openFile
+	t.Cleanup(func() { openFile = old })
+	openFile = func(*os.Root, string) (*os.File, error) { return nil, errors.New("boom") }
+	_, err := (Store{MaxBytes: 1024}).Write(t.TempDir(), "msg1", nil, Attachment{Name: "../../evil"}, strings.NewReader("x"))
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWriteCloseError(t *testing.T) {
+	old := closeFile
+	t.Cleanup(func() { closeFile = old })
+	closeFile = func(f *os.File) error { f.Close(); return errors.New("disk full") }
+	cwd := t.TempDir()
+	_, err := (Store{MaxBytes: 1024}).Write(cwd, "msg1", nil, Attachment{Name: "a.txt"}, strings.NewReader("x"))
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, DefaultDirName, "msg1", "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial file left behind: %v", err)
+	}
 }
 
 func TestOpenMessageDirParentMissing(t *testing.T) {

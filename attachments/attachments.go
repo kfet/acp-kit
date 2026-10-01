@@ -102,19 +102,24 @@ func (s Store) Write(cwd, msgID string, used map[string]struct{}, a Attachment, 
 		// os.Root rejects traversal and absolute paths. Retry with a
 		// hash-derived fallback so one hostile name cannot drop the attachment.
 		finalName = uniqueName(fallbackName(a), used)
-		f, err = root.OpenFile(finalName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		mustNot(err, "fallback OpenFile")
+		f, err = openFile(root, finalName)
+		if err != nil {
+			return File{}, fmt.Errorf("attachments: open %q: %w", finalName, err)
+		}
 	}
 	used[finalName] = struct{}{}
 
 	max := s.maxBytes()
 	n, copyErr := io.Copy(f, io.LimitReader(r, max+1))
-	closeErr := f.Close()
+	closeErr := closeFile(f)
 	if copyErr != nil {
 		_ = root.Remove(finalName)
 		return File{}, copyErr
 	}
-	mustNot(closeErr, "close")
+	if closeErr != nil {
+		_ = root.Remove(finalName)
+		return File{}, fmt.Errorf("attachments: close %q: %w", finalName, closeErr)
+	}
 	if n > max {
 		_ = root.Remove(finalName)
 		return File{}, fmt.Errorf("attachment exceeds cap %d bytes", max)
@@ -175,16 +180,23 @@ func (s Store) openMessageDir(cwd, msgID string) (*os.Root, error) {
 		return nil, err
 	}
 	parent, err := os.OpenRoot(base)
-	mustNot(err, "OpenRoot")
-	if err := parent.Mkdir(msgID, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-		_ = parent.Close()
-		mustNot(err, "Mkdir within Root")
+	if err != nil {
+		return nil, err
 	}
-	sub, err := parent.OpenRoot(msgID)
-	_ = parent.Close()
-	mustNot(err, "OpenRoot within Root")
-	return sub, nil
+	defer parent.Close()
+	if err := parent.Mkdir(msgID, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, err
+	}
+	return parent.OpenRoot(msgID)
 }
+
+// Seams so tests can make the fallback open and the close fail.
+var (
+	openFile = func(r *os.Root, name string) (*os.File, error) {
+		return r.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	}
+	closeFile = func(f *os.File) error { return f.Close() }
+)
 
 func (s Store) dirName() string {
 	if strings.TrimSpace(s.DirName) == "" {

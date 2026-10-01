@@ -369,8 +369,7 @@ func (m *Manager) classify(ctx context.Context, in *In) bool {
 	}
 	if b := m.broker; b != nil {
 		tok := in.token()
-		if b.HasPending(tok) || b.IsCommand(in.Text) {
-			m.command(ctx, in)
+		if (b.HasPending(tok) || b.IsCommand(in.Text)) && m.command(ctx, in) {
 			return false
 		}
 		if rw, ok := b.Passthrough(in.Text); ok {
@@ -388,22 +387,29 @@ func (m *Manager) classify(ctx context.Context, in *In) bool {
 	return true
 }
 
-func (m *Manager) command(ctx context.Context, in *In) {
+// command runs a broker command. It returns false when the broker did
+// not take the message after all — a pending login that ended between
+// HasPending and Handle — so the caller forwards it as a normal prompt.
+func (m *Manager) command(ctx context.Context, in *In) bool {
 	out, err := m.broker.Handle(ctx, in.token(), in.Text)
 	if err != nil {
 		m.cfg.Logf("convo: command %q in %s: %v", in.Text, in.Conv, err)
 		if f, ok := in.Sink.(Failer); ok {
 			m.deliver(f.Fail(ctx, in, err), in)
-			return
+			return true
 		}
 		m.reply(ctx, in, fmt.Sprintf("Command failed: %v", err))
-		return
+		return true
 	}
-	text := mustOutcome(out).Text
+	if out == nil {
+		return false
+	}
+	text := out.Text
 	if m.cfg.Hooks.Decorate != nil {
 		text = m.cfg.Hooks.Decorate(in.Text, text)
 	}
 	m.reply(ctx, in, text)
+	return true
 }
 
 func (m *Manager) reply(ctx context.Context, in *In, text string) {

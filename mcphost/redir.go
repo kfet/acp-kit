@@ -387,13 +387,13 @@ func (p *proxy) fromHost() {
 		}
 
 		p.mu.Lock()
-		switch {
-		case p.closing:
+		if p.closing {
 			p.mu.Unlock()
 			return
-		case p.gen != gen:
-			// forward() already rebuilt the connection; pick it up.
-		default:
+		}
+		// If p.gen != gen, forward() already rebuilt the connection;
+		// the next loop picks it up.
+		if p.gen == gen {
 			if err := p.connectLocked(); err != nil {
 				p.failLocked(err)
 				p.mu.Unlock()
