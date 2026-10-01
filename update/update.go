@@ -18,9 +18,12 @@
 //	!update fir --rollback   restore fir.prev, then reload
 //	!update --check          report versions; changes nothing
 //	... --force              cancel in-flight turns first
+//	!upgrade ...             exact alias of !update
+//	!restart [--force]       graceful reload only, no binary change
 //
 // On a fleet-managed host (Config.Fleet) every update form except
-// --check runs Config.ConvergeCmd instead — see converge.go.
+// --check runs Config.ConvergeCmd instead — see converge.go. `!restart`
+// changes no binary, so it cannot drift a fleet host: it just reloads.
 //
 // Everything relay-specific is a hook in Config (UpdateAgent,
 // UpdateSelf, CancelAll, WaitIdle, Reload…). The relay decides WHO is
@@ -158,7 +161,8 @@ type Updater struct {
 const markerTTL = time.Hour
 
 // HelpLine is the `!help` bullet for this command.
-const HelpLine = "- `!update [fir|relay] [--check|--force|--rollback]` — owner only: update fir and/or the relay, then reload gracefully (a fleet host runs its converge command)\n"
+const HelpLine = "- `!update [fir|relay] [--check|--force|--rollback]` — owner only: update fir and/or the relay, then reload gracefully (a fleet host runs its converge command); `!upgrade` is an alias\n" +
+	"- `!restart [--force]` — owner only: reload the relay and fir gracefully without updating anything\n"
 
 // New constructs an Updater, filling defaults.
 func New(cfg Config) *Updater {
@@ -240,17 +244,31 @@ type Op struct {
 	Check        bool
 	Force        bool
 	Rollback     bool
+	// Restart is `!restart`: reload only, no binary change.
+	Restart bool
 }
 
-// IsCommand reports whether text is an `!update` command (any sigil,
-// any case on the verb).
-func IsCommand(text string) bool {
+// verb returns the lower-cased command verb of text ("" if none).
+func verb(text string) string {
 	t := strings.TrimSpace(text)
 	if t == "" || !strings.ContainsRune("/!.", rune(t[0])) {
-		return false
+		return ""
 	}
 	f := strings.Fields(t[1:])
-	return len(f) > 0 && strings.EqualFold(f[0], "update")
+	if len(f) == 0 {
+		return ""
+	}
+	return strings.ToLower(f[0])
+}
+
+// IsCommand reports whether text is an `!update`, `!upgrade` or
+// `!restart` command (any sigil, any case on the verb).
+func IsCommand(text string) bool {
+	switch verb(text) {
+	case "update", "upgrade", "restart":
+		return true
+	}
+	return false
 }
 
 // Parse parses the text of an `!update` command. The caller has
@@ -261,6 +279,18 @@ func Parse(text string) (Op, error) {
 	f := strings.Fields(strings.TrimSpace(text))
 	if len(f) > 0 {
 		f = f[1:]
+	}
+	if verb(text) == "restart" {
+		op.Restart = true
+		for _, a := range f {
+			switch strings.ToLower(a) {
+			case "--force", "-force":
+				op.Force = true
+			default:
+				return op, fmt.Errorf("unknown argument %q", a)
+			}
+		}
+		return op, nil
 	}
 	for _, a := range f {
 		switch strings.ToLower(a) {
@@ -295,7 +325,7 @@ func Parse(text string) (Op, error) {
 	return op, nil
 }
 
-const usage = "Usage: `!update [fir|relay] [--check|--force]`, or `!update fir --rollback`."
+const usage = "Usage: `!update [fir|relay] [--check|--force]`, or `!update fir --rollback`, or `!restart [--force]`. `!upgrade` = `!update`."
 
 // Handle runs one `!update`.
 func (u *Updater) Handle(ctx context.Context, req Request) Result {
@@ -304,7 +334,11 @@ func (u *Updater) Handle(ctx context.Context, req Request) Result {
 		return Result{Text: "❌ " + err.Error() + "\n\n" + usage}
 	}
 	if !u.owner(req.Requester) {
-		return Result{Text: "⛔ `!update` is owner-only on this relay."}
+		name := "!update"
+		if op.Restart {
+			name = "!restart"
+		}
+		return Result{Text: "⛔ `" + name + "` is owner-only on this relay."}
 	}
 	if op.Check {
 		return Result{Text: u.report(ctx)}
@@ -312,7 +346,7 @@ func (u *Updater) Handle(ctx context.Context, req Request) Result {
 	if op.Force && (u.cfg.CancelAll == nil || u.cfg.WaitIdle == nil) {
 		return Result{Text: "❌ `--force` is not supported by this relay (it cannot cancel turns)."}
 	}
-	if u.cfg.Fleet {
+	if u.cfg.Fleet && !op.Restart {
 		switch {
 		case op.Rollback:
 			return Result{Text: "⛔ This host is fleet-managed (converge/dist.lock): a rollback would drift it " +
@@ -332,7 +366,7 @@ func (u *Updater) Handle(ctx context.Context, req Request) Result {
 		}
 		return res
 	}
-	if op.Agent && u.cfg.AgentBin == "" {
+	if !op.Restart && op.Agent && u.cfg.AgentBin == "" {
 		return Result{Text: "❌ The agent binary is unknown here, so it cannot be updated."}
 	}
 	if err := u.acquire(); err != nil {
@@ -350,10 +384,11 @@ func (u *Updater) run(ctx context.Context, req Request, op Op) Result {
 	m := Marker{
 		ConvID: req.ConvID, Requester: req.Requester, Who: req.Who,
 		OldAgent: u.runningAgent(), OldRelay: u.cfg.RelayVersion,
-		Rollback: op.Rollback, At: u.cfg.Now(),
+		Rollback: op.Rollback, Restart: op.Restart, At: u.cfg.Now(),
 	}
 	var log strings.Builder
 	switch {
+	case op.Restart:
 	case op.Rollback:
 		if err := u.rollback(); err != nil {
 			return Result{Text: "❌ Rollback failed: " + err.Error()}
@@ -378,7 +413,7 @@ func (u *Updater) run(ctx context.Context, req Request, op Op) Result {
 			os.Remove(cand)
 		}
 	}
-	if op.Relay {
+	if op.Relay && !op.Restart {
 		out, err := u.cfg.UpdateSelf(ctx)
 		if err != nil {
 			return Result{Text: fmt.Sprintf("❌ `%s update` failed: %v\n%s", u.cfg.RelayName, err, fence(out))}
@@ -394,15 +429,19 @@ func (u *Updater) run(ctx context.Context, req Request, op Op) Result {
 		cancel()
 		if err != nil {
 			return Result{Text: log.String() + fmt.Sprintf("⚠️ Turns still running %s after cancel — NOT reloading "+
-				"(a hard restart would lose queued messages). The new binaries are on disk; retry `!update --force` "+
+				"(a hard restart would lose queued messages). The new binaries are on disk; retry with `--force` "+
 				"or reload once idle.", u.cfg.DrainTimeout)}
 		}
 	}
 	if err := u.writeMarker(m); err != nil {
 		return Result{Text: log.String() + "❌ Could not write the reload marker: " + err.Error() + ". Not reloading."}
 	}
-	log.WriteString(fmt.Sprintf("🔄 Updated on disk: %s %s, %s %s. Reloading gracefully — I'll report here when back.",
-		u.cfg.AgentName, u.cfg.Version(ctx, u.cfg.AgentBin), u.cfg.RelayName, u.cfg.Version(ctx, u.cfg.RelayBin)))
+	if op.Restart {
+		log.WriteString("🔄 Restarting gracefully — I'll report here when back.")
+	} else {
+		log.WriteString(fmt.Sprintf("🔄 Updated on disk: %s %s, %s %s. Reloading gracefully — I'll report here when back.",
+			u.cfg.AgentName, u.cfg.Version(ctx, u.cfg.AgentBin), u.cfg.RelayName, u.cfg.Version(ctx, u.cfg.RelayBin)))
+	}
 	return Result{Text: log.String(), After: func() error {
 		if err := u.cfg.Reload(); err != nil {
 			_ = os.Remove(u.markerPath())
@@ -572,6 +611,7 @@ type Marker struct {
 	OldAgent  string    `json:"old_agent"`
 	OldRelay  string    `json:"old_relay"`
 	Rollback  bool      `json:"rollback,omitempty"`
+	Restart   bool      `json:"restart,omitempty"`
 	At        time.Time `json:"at"`
 	// Converge marks a fleet host's converge job: the report waits for
 	// the job, not just for the reload. OldLock is dist.lock before it.
@@ -628,11 +668,14 @@ func (u *Updater) Resume(ctx context.Context, post func(convID, text string) err
 	if u.cfg.AgentBin != "" {
 		newAgent = u.cfg.Version(ctx, u.cfg.AgentBin)
 	}
-	verb := "Updated"
-	if m.Rollback {
-		verb = "Rolled back"
+	what := "Updated and reloaded"
+	switch {
+	case m.Rollback:
+		what = "Rolled back and reloaded"
+	case m.Restart:
+		what = "Restarted"
 	}
-	text := fmt.Sprintf("✅ %s and reloaded: %s %s → %s, %s %s → %s.", verb,
+	text := fmt.Sprintf("✅ %s: %s %s → %s, %s %s → %s.", what,
 		u.cfg.AgentName, m.OldAgent, newAgent, u.cfg.RelayName, m.OldRelay, u.cfg.RelayVersion)
 	if m.Who != "" {
 		text += " (requested by " + m.Who + ")"

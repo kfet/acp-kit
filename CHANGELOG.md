@@ -8,6 +8,13 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-01
+
+### Added
+
+- `update`: `!upgrade` is an exact alias of `!update`.
+- `update`: `!restart [--force]` — owner-only graceful reload with no binary change; same lock, marker and Resume report ("Restarted"). Allowed on fleet-managed hosts (plain reload, no converge).
+
 ## [0.28.0] - 2026-09-29
 
 ### Added

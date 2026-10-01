@@ -66,7 +66,7 @@ func (h *harness) do(text, who string) Result {
 
 func TestIsCommand(t *testing.T) {
 	for in, want := range map[string]bool{
-		"!update": true, ".UPDATE fir": true, "/update --check": true,
+		"!update": true, ".UPDATE fir": true, "!Upgrade": true, "/restart --force": true, "!restarts": false, "/update --check": true,
 		"update": false, "!updates": false, "": false, "!": false, "!status": false,
 	} {
 		if got := IsCommand(in); got != want {
@@ -84,6 +84,9 @@ func TestParse(t *testing.T) {
 		"!update fir --rollback": {Agent: true, Rollback: true},
 		"!update --rollback":     {Agent: true, Rollback: true},
 		"!update agent self":     {Agent: true, Relay: true},
+		"!UPGRADE fir":           {Agent: true},
+		"!restart":               {Restart: true},
+		".Restart --force":       {Restart: true, Force: true},
 	}
 	for in, want := range cases {
 		got, err := Parse(in)
@@ -96,6 +99,7 @@ func TestParse(t *testing.T) {
 		"!update bogus":            "unknown argument",
 		"!update relay --rollback": "fir only",
 		"!update --check --force":  "--check",
+		"!restart fir":             "unknown argument",
 	} {
 		if _, err := Parse(in); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Parse(%q) err=%v", in, err)
@@ -449,5 +453,30 @@ func TestAgentBinSymlinkResolved(t *testing.T) {
 	}
 	if got := New(Config{AgentBin: "/nonexistent/fir"}).cfg.AgentBin; got != "/nonexistent/fir" {
 		t.Fatal(got)
+	}
+}
+
+func TestRestart(t *testing.T) {
+	for _, fleet := range []bool{false, true} {
+		h := newHarness(t, func(c *Config) { c.Fleet = fleet; c.AgentBin = "" })
+		h.cancelled = []string{"a"}
+		if r := h.do("!restart", "7"); !strings.Contains(r.Text, "`!restart` is owner-only") {
+			t.Fatal(r.Text)
+		}
+		r := h.do("!restart --force", "42")
+		if r.After == nil || !strings.Contains(r.Text, "Restarting") || !strings.Contains(r.Text, "Cancelled turns in: a") {
+			t.Fatalf("got %q", r.Text)
+		}
+		if r := h.do("!restart", "42"); !strings.Contains(r.Text, "already in progress") {
+			t.Fatal(r.Text)
+		}
+		if err := r.After(); err != nil || h.reloads != 1 || h.agentRuns+h.selfRuns != 0 {
+			t.Fatalf("err=%v reloads=%d", err, h.reloads)
+		}
+		var text string
+		err := New(h.u.cfg).Resume(context.Background(), func(_, s string) error { text = s; return nil })
+		if err != nil || !strings.HasPrefix(text, "✅ Restarted: fir 1.0.0 → ?, zulip-acp 0.1.0 → 0.1.0.") {
+			t.Fatalf("err=%v text=%q", err, text)
+		}
 	}
 }
