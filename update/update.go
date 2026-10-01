@@ -496,12 +496,14 @@ func (u *Updater) rollback() error {
 // copyFile copies src to dst atomically (temp + rename), preserving mode.
 // Rename, not overwrite, so replacing a running binary never hits ETXTBSY.
 func copyFile(src, dst string) error {
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
 	b, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	st, err := os.Stat(src)
-	mustNot(err, "stat after read")
 	tmp := dst + ".tmp"
 	if err := os.WriteFile(tmp, b, st.Mode().Perm()); err != nil {
 		return err
@@ -625,11 +627,16 @@ type Marker struct {
 	OldLock  map[string]string `json:"old_lock,omitempty"`
 }
 
+// marshalMarker is a seam so tests can make the marshal fail.
+var marshalMarker = func(m Marker) ([]byte, error) { return json.Marshal(m) }
+
 func (u *Updater) markerPath() string { return filepath.Join(u.cfg.StateDir, "update-marker.json") }
 
 func (u *Updater) writeMarker(m Marker) error {
-	b, err := json.Marshal(m)
-	mustNot(err, "marshal marker")
+	b, err := marshalMarker(m)
+	if err != nil {
+		return err
+	}
 	tmp := u.markerPath() + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err

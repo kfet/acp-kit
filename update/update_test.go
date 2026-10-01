@@ -497,3 +497,23 @@ func TestAgentDirRemovedDuringUpdate(t *testing.T) {
 		t.Fatalf("got %q", r.Text)
 	}
 }
+
+// The updater must never panic: unreadable files and marshal errors are
+// reported as errors.
+func TestNoPanicPaths(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	os.WriteFile(src, []byte("x"), 0o000)
+	if os.Getuid() != 0 {
+		if err := copyFile(src, filepath.Join(dir, "dst")); err == nil {
+			t.Fatal("copyFile of unreadable file: want error")
+		}
+	}
+	old := marshalMarker
+	defer func() { marshalMarker = old }()
+	marshalMarker = func(Marker) ([]byte, error) { return nil, errors.New("boom") }
+	h := newHarness(t, nil)
+	if err := h.u.writeMarker(Marker{}); err == nil || err.Error() != "boom" {
+		t.Fatalf("writeMarker: %v", err)
+	}
+}
