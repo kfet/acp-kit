@@ -8,6 +8,15 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-01
+
+### Fixed
+
+- `update`: the relay no longer crashes when the agent's own updater deletes its directory (Homebrew removes the old `Cellar/<ver>/`). A failed `.prev` promotion is now a warning; the update and reload continue.
+- `convo`: a login that ends between `HasPending` and `Handle` no longer crashes the relay; the message is forwarded as a normal prompt.
+- No `panic` remains in production code. All `*_must.go` helpers are removed; every former panic (pipes, chmod, OpenRoot, close, marshal, temp dir) returns an error. `.covignore` no longer hides them.
+- `client`: de-flaked `TestTurnLiveness_TightRaceKeepsTurnAlive`.
+
 ## [0.29.0] - 2026-10-01
 
 ### Added
