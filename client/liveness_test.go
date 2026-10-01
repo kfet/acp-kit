@@ -197,17 +197,25 @@ func TestTurnLiveness_TimerLosingTheRaceDoesNotCut(t *testing.T) {
 	}
 }
 
-// Under a window short enough that every update races the timer, a
-// stream of progress must still keep the turn alive.
+// A steady stream of progress keeps the turn alive across many windows,
+// while the timer keeps firing and re-arming. Updates come every tenth of
+// a window, so a cut needs a scheduling stall of 90% of the window. The
+// old version used a 1ms window: under -race and a loaded host, one
+// ordinary stall between two updates exceeded it, and the test flaked.
+// The lost race itself is pinned exactly by
+// TestTurnLiveness_TimerLosingTheRaceDoesNotCut.
 func TestTurnLiveness_TightRaceKeepsTurnAlive(t *testing.T) {
-	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: time.Millisecond})
+	const window = 50 * time.Millisecond
+	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: window})
 	defer stop()
 	sink := live.Wrap(&recordSink{})
-	for i := 0; i < 400; i++ {
+	end := time.Now().Add(10 * window)
+	for i := 0; time.Now().Before(end); i++ {
 		if err := ctx.Err(); err != nil {
 			t.Fatalf("cut at iteration %d despite continuous progress: %v", i, context.Cause(ctx))
 		}
 		_ = sink.OnUpdate(context.Background(), note(acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{ToolCallId: "t1"}}))
+		time.Sleep(window / 10)
 	}
 }
 
