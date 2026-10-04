@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `autoupdate` — relay auto-update. Modes `off | notify | stage (default) | auto`. Polls every ~6h with jitter via distkit's quota-free `/releases/latest` redirect; stages + sha256-verifies next to the binary; posts ONE offer message through a relay `Surface` (edited in place; up to 3 changelog lines, breaking first) and takes owner decisions (`ApplyNow`, `Tomorrow`, `SkipVersion`). Applies at the next idle point outside optional quiet hours via the graceful reload, keeping `<bin>.prev`. The new image must pass `HealthProbe` within 2 min or it restores `.prev`, blocks the version, reloads, and the old image reports why; automatic applies then halt until an owner acts. Max one automatic apply per 24h; `auto` is refused on fleet hosts. A newer release supersedes a pending offer. A release whose notes say `requires fir >= X` updates fir with the relay as one unit. On a fleet host the trigger is dist.lock drift and approval runs the `update` converge path. One reminder after 72h. `Status()` is for `!update --check`.
+
 ## [0.30.0] - 2026-10-01
 
 ### Fixed
