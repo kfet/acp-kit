@@ -58,6 +58,12 @@ type Caps struct {
 	// ResumeSession reflects agentCapabilities.sessionCapabilities.resume
 	// (unstable RFD).
 	ResumeSession bool
+	// ForkSession reflects agentCapabilities.sessionCapabilities.fork
+	// (unstable RFD): the agent implements session/fork.
+	ForkSession bool
+	// ForkAt reflects agentCapabilities.sessionCapabilities.fork._meta.at:
+	// session/fork honours a `_meta.at` entry id choosing the fork point.
+	ForkAt bool
 	// EmbeddedContext reflects
 	// agentCapabilities.promptCapabilities.embeddedContext: when true,
 	// the relay may emit ContentBlock::Resource (with TextResourceContents)
@@ -349,6 +355,9 @@ func parseCaps(raw json.RawMessage) Caps {
 			SessionCapabilities struct {
 				List   *json.RawMessage `json:"list"`
 				Resume *json.RawMessage `json:"resume"`
+				Fork   *struct {
+					Meta map[string]json.RawMessage `json:"_meta"`
+				} `json:"fork"`
 			} `json:"sessionCapabilities"`
 			PromptCapabilities struct {
 				EmbeddedContext bool `json:"embeddedContext"`
@@ -359,6 +368,7 @@ func parseCaps(raw json.RawMessage) Caps {
 		} `json:"agentCapabilities"`
 	}
 	_ = json.Unmarshal(raw, &env)
+	fork := env.AgentCapabilities.SessionCapabilities.Fork
 	_, sysPrompt := env.AgentCapabilities.Meta["session.systemPrompt"]
 	var exts map[string]json.RawMessage
 	if len(env.AgentCapabilities.Meta) > 0 {
@@ -377,6 +387,8 @@ func parseCaps(raw json.RawMessage) Caps {
 		LoadSession:     env.AgentCapabilities.LoadSession,
 		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
 		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
+		ForkSession:     fork != nil,
+		ForkAt:          fork != nil && fork.Meta["at"] != nil,
 		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 		Image:           env.AgentCapabilities.PromptCapabilities.Image,
 		Audio:           env.AgentCapabilities.PromptCapabilities.Audio,
@@ -686,6 +698,57 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 	a.noteModels(sid, resp.modelState())
 	a.mu.Unlock()
 	return nil
+}
+
+// ErrForkUnsupported is returned by ForkSession when the agent does not
+// advertise sessionCapabilities.fork (or, with a fork point, fork._meta.at).
+// Callers should fall back to a fresh session.
+var ErrForkUnsupported = errors.New("acp agent: session/fork not supported")
+
+type forkSessionRequest struct {
+	SessionId  string          `json:"sessionId"`
+	Cwd        string          `json:"cwd"`
+	McpServers []acp.McpServer `json:"mcpServers"`
+	Meta       map[string]any  `json:"_meta,omitempty"`
+}
+
+// ForkSession calls the unstable session/fork on parent and registers sink
+// for the returned child session exactly as NewSession/ResumeSession do:
+// same update routing, and after an agent respawn the child is recovered
+// by resuming it. at, when non-empty, is sent as `_meta.at` and names the
+// entry to fork at; empty lets the agent choose (fir: the parent's latest
+// entry with no tool call left unfinished). Returns ErrForkUnsupported
+// (wrapped) when the agent does not advertise the needed capability.
+func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink SessionUpdateSink) (acp.SessionId, error) {
+	caps := a.Caps()
+	if !caps.ForkSession {
+		return "", ErrForkUnsupported
+	}
+	if at != "" && !caps.ForkAt {
+		return "", fmt.Errorf("%w: fork point (_meta.at) not advertised", ErrForkUnsupported)
+	}
+	g, wire, err := a.route(ctx, parent)
+	if err != nil {
+		return "", err
+	}
+	req := forkSessionRequest{SessionId: string(wire), Cwd: cwd, McpServers: a.cfg.mcpFor(cwd)}
+	if at != "" {
+		req.Meta = map[string]any{"at": at}
+	}
+	resp, err := rpc[sessionResponse](ctx, g, "session/fork", req)
+	if err != nil {
+		return "", err
+	}
+	if resp.SessionId == "" {
+		return "", errors.New("acp agent: session/fork returned no sessionId")
+	}
+	a.track(resp.SessionId, cwd, nil, g)
+	a.mu.Lock()
+	a.sinks[resp.SessionId] = sink
+	a.noteConfig(resp.SessionId, resp.ConfigOptions)
+	a.noteModels(resp.SessionId, resp.modelState())
+	a.mu.Unlock()
+	return resp.SessionId, nil
 }
 
 // Prompt sends a user message to the session. Returns the stop reason.
