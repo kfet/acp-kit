@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-06
+
 ### Added
 
 - `client.AgentProc.ForkSession(ctx, cwd, parent, at, sink)` — calls `session/fork` when the agent advertises `sessionCapabilities.fork` (`Caps().ForkSession`); a non-empty `at` is sent as `_meta.at` (needs `Caps().ForkAt`). The child is registered like `NewSession`/`ResumeSession` and recovered by resume after respawn. Returns `ErrForkUnsupported` so callers can fall back to a fresh session.
