@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `client.AgentProc.PromptTurn` (and the `client.TurnPrompter` interface) returns a `client.TurnResult` with the stop reason and the turn leaf id from the prompt response `_meta.leafId`. `AbstainResult.LeafID` and `RefuseResult.LeafID` carry it too. `Prompt` does not change.
+
 ## [0.32.0] - 2026-10-06
 
 ### Added

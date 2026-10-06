@@ -88,7 +88,7 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 				},
 			}, nil
 		case acp.AgentMethodSessionPrompt:
-			return map[string]any{"stopReason": "end_turn"}, nil
+			return map[string]any{"stopReason": "end_turn", "_meta": map[string]any{"leafId": "leaf-7"}}, nil
 		case agentMethodSessionSetModel:
 			return map[string]any{}, nil
 		case "session/set_config_option":
@@ -185,6 +185,10 @@ func TestPipeAndDispatch(t *testing.T) {
 	stop, err := a.Prompt(ctx, sid, []acp.ContentBlock{acp.TextBlock("hi")})
 	if err != nil || stop != "end_turn" {
 		t.Fatalf("Prompt: stop=%q err=%v", stop, err)
+	}
+	tr, err := a.PromptTurn(ctx, sid, []acp.ContentBlock{acp.TextBlock("hi")})
+	if err != nil || tr.Stop != "end_turn" || tr.LeafID != "leaf-7" {
+		t.Fatalf("PromptTurn: %+v err=%v", tr, err)
 	}
 	if err := a.Cancel(ctx, sid); err != nil {
 		t.Fatalf("Cancel: %v", err)

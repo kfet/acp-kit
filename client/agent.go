@@ -767,9 +767,50 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 // the child's stdin, and a child wedged badly enough not to read it is
 // past helping. The prompt error is returned regardless.
 func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
+	res, err := a.PromptTurn(ctx, sid, prompt)
+	return res.Stop, err
+}
+
+// TurnResult is what one session/prompt round trip reports.
+type TurnResult struct {
+	// Stop is the stop reason of the turn.
+	Stop acp.StopReason
+	// LeafID is the agent's id for the last entry of the turn, read from
+	// the prompt response's _meta.leafId. It is empty when the agent does
+	// not report it. An agent that reports it accepts it as the
+	// session/fork _meta.at value (see ForkSession).
+	LeafID string
+}
+
+// TurnPrompter is a Prompter that also reports the turn's leaf id.
+// *AgentProc satisfies it.
+type TurnPrompter interface {
+	PromptTurn(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (TurnResult, error)
+}
+
+// promptTurn runs one turn through p, and reads the leaf id when p can
+// report it.
+func promptTurn(ctx context.Context, p Prompter, sid acp.SessionId, prompt []acp.ContentBlock) (TurnResult, error) {
+	if tp, ok := p.(TurnPrompter); ok {
+		return tp.PromptTurn(ctx, sid, prompt)
+	}
+	stop, err := p.Prompt(ctx, sid, prompt)
+	return TurnResult{Stop: stop}, err
+}
+
+// leafIDOf reads _meta.leafId from a prompt response. A missing or
+// non-string value gives "".
+func leafIDOf(meta map[string]any) string {
+	s, _ := meta["leafId"].(string)
+	return s
+}
+
+// PromptTurn is Prompt, and it also returns the turn's leaf id (see
+// TurnResult). The cancellation behaviour is the same as Prompt.
+func (a *AgentProc) PromptTurn(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (TurnResult, error) {
 	g, wire, err := a.route(ctx, sid)
 	if err != nil {
-		return "", err
+		return TurnResult{}, err
 	}
 	resp, err := rpc[acp.PromptResponse](ctx, g, acp.AgentMethodSessionPrompt, acp.PromptRequest{
 		SessionId: wire,
@@ -781,9 +822,9 @@ func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.
 			_ = a.Cancel(cctx, sid)
 			stop()
 		}
-		return "", err
+		return TurnResult{}, err
 	}
-	return resp.StopReason, nil
+	return TurnResult{Stop: resp.StopReason, LeafID: leafIDOf(resp.Meta)}, nil
 }
 
 // cancelNotifyTimeout bounds the courtesy session/cancel Prompt sends

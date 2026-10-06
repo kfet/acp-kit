@@ -14,6 +14,10 @@ type AbstainResult struct {
 	// Abstained is true when the agent declined to respond and nothing was
 	// delivered downstream.
 	Abstained bool
+	// LeafID is the turn's leaf id when the agent reports it (see
+	// TurnResult). It is set when the agent abstained, too: the prompt
+	// still reached the session.
+	LeafID string
 }
 
 // PromptAbstainable runs an ACP prompt through vs (which MUST be the session's
@@ -32,8 +36,8 @@ type AbstainResult struct {
 // abstains).
 func PromptAbstainable(ctx context.Context, agent Prompter, sid acp.SessionId, prompt []acp.ContentBlock, vs *ValidatingSink, sentinel string) (AbstainResult, error) {
 	vs.Drop()
-	stop, err := agent.Prompt(ctx, sid, prompt)
-	res := AbstainResult{Stop: stop}
+	tr, err := promptTurn(ctx, agent, sid, prompt)
+	res := AbstainResult{Stop: tr.Stop, LeafID: tr.LeafID}
 	if err != nil {
 		return res, err
 	}

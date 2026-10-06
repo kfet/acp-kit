@@ -142,6 +142,7 @@ type RefuseResult struct {
 	Refusals int            // number of regenerations triggered
 	Accepted bool           // a generation passed validation
 	FellBack bool           // Fallback was applied after exhaustion
+	LeafID   string         // leaf id of the delivered (last) attempt, if reported (see TurnResult)
 }
 
 // PromptValidated runs an ACP prompt, validates the assistant's complete
@@ -159,11 +160,11 @@ func PromptValidated(ctx context.Context, agent Prompter, sid acp.SessionId, pro
 	var res RefuseResult
 	for {
 		vs.reset()
-		stop, err := agent.Prompt(ctx, sid, cur)
+		tr, err := promptTurn(ctx, agent, sid, cur)
 		if err != nil {
 			return res, err
 		}
-		res.Stop = stop
+		res.Stop, res.LeafID = tr.Stop, tr.LeafID
 
 		if cfg.Validator == nil {
 			res.Accepted = true
