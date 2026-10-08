@@ -320,6 +320,11 @@ func TestShortModelName(t *testing.T) {
 		// Whitespace and casing.
 		{"  Anthropic/Claude-Sonnet-4-5  ", "sonnet-4.5"},
 		{"/leading-slash", "leading-slas"},
+
+		// Gateway routes and Bedrock ids: model is the last segment.
+		{"bifrost/bedrock/global.claude-opus-5-5", "opus-5.5"},
+		{"bifrost/bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", "sonnet-4.5"},
+		{"bedrock/anthropic.claude-haiku-4-5", "haiku-4.5"},
 	}
 	for _, c := range cases {
 		if got := ShortModelName(c.in); got != c.want {

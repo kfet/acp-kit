@@ -123,9 +123,12 @@ var modelVendorPrefixes = []string{"claude-", "anthropic-"}
 // An empty id returns "" — callers treat that as "drop the segment".
 func ShortModelName(modelID string) string {
 	s := strings.TrimSpace(modelID)
-	if i := strings.IndexByte(s, '/'); i >= 0 {
+	// Gateways nest routes ("bifrost/bedrock/global.claude-opus-5-5"):
+	// the model is always the LAST path segment.
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
 		s = s[i+1:]
 	}
+	s = trimBedrockID(s)
 	s = trimModelDecorations(s)
 	for _, p := range modelVendorPrefixes {
 		if len(s) > len(p) && strings.EqualFold(s[:len(p)], p) {
@@ -134,6 +137,28 @@ func ShortModelName(modelID string) string {
 		}
 	}
 	return CapRunes(strings.ToLower(dashesToDots(s)), MaxFieldRunes)
+}
+
+// bedrockRegionPrefixes are Bedrock inference-profile scopes and the
+// vendor namespace ("global.anthropic.claude-…", "us.anthropic.…").
+var bedrockRegionPrefixes = []string{"global.", "us.", "eu.", "apac.", "jp.", "au.", "ca.", "us-gov."}
+var bedrockVendorPrefixes = []string{"anthropic.", "amazon.", "meta.", "mistral.", "cohere.", "ai21.", "deepseek.", "openai.", "qwen.", "writer."}
+
+// trimBedrockID strips Bedrock id decorations: a region/profile scope,
+// a vendor namespace, and a "-vN:M" version tail ("-v1:0").
+func trimBedrockID(s string) string {
+	for _, list := range [][]string{bedrockRegionPrefixes, bedrockVendorPrefixes} {
+		for _, p := range list {
+			if len(s) > len(p) && strings.EqualFold(s[:len(p)], p) {
+				s = s[len(p):]
+				break
+			}
+		}
+	}
+	if i := strings.LastIndex(s, "-v"); i > 0 && strings.Contains(s[i:], ":") {
+		s = s[:i]
+	}
+	return s
 }
 
 // trimModelDecorations strips trailing release-channel words and date
@@ -215,6 +240,10 @@ func ProviderEmoji(slug string) string {
 		return "🌪️"
 	case "meta", "meta-llama", "llama":
 		return "🦙"
+	case "bifrost":
+		return "🌈"
+	case "bedrock", "amazon-bedrock", "aws":
+		return "🪨"
 	case "openrouter":
 		return "🔀"
 	case "groq":
