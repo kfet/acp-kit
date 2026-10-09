@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-09
+
+### Fixed
+
+- `statusline.ShortModelName` takes the model from the last `/` segment, so gateway routes (`bifrost/bedrock/global.claude-opus-5-5`) show `opus-5.5`. It strips Bedrock region and vendor prefixes and the `-vN:M` tail.
+
+### Added
+
+- Provider emoji for `bifrost` (🌈) and `bedrock` (🪨).
+
 ## [0.33.0] - 2026-10-06
 
 ### Added
