@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-20
+
+### Added
+
+- `command.IDPoster` and `Broker.PostIDs`: a relay can return the ids of the messages a post made. The `post` tool reports them, so an agent can act on its own message (for example, add reactions).
+
+### Fixed
+
+- `statusline` tests cover the `bifrost` and `bedrock` emoji.
+
 ## [0.34.0] - 2026-10-09
 
 ### Fixed
