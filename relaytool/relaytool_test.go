@@ -410,3 +410,23 @@ func TestDefaultLogfIsSilent(t *testing.T) {
 	}
 	tools.EndTurn("conv")
 }
+
+// idCtrl is a loopCtrl whose posts report message ids.
+type idCtrl struct {
+	loopCtrl
+	ids []string
+}
+
+func (c *idCtrl) PostToIDs(conv, text string) ([]string, error) {
+	c.posted = append(c.posted, [2]string{conv, text})
+	return c.ids, c.postErr
+}
+
+func TestPostToolReportsIDs(t *testing.T) {
+	c := &idCtrl{ids: []string{"41", "42"}}
+	tools := newTools(t, c, nil)
+	got, err := call(t, tools, ToolPost, "conv", `{"text":"pick one"}`)
+	if err != nil || !strings.Contains(got, "message id(s): 41, 42.") {
+		t.Fatalf("post = %q, %v", got, err)
+	}
+}

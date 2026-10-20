@@ -38,6 +38,8 @@ func TestProviderEmoji(t *testing.T) {
 		{"openrouter", "🔀"},
 		{"groq", "⚡"},
 		{"deepseek", "🐋"},
+		{"bifrost", "🌈"},
+		{"bedrock", "🪨"},
 		{"cohere", "🔗"},
 		{"sakana", "🐡"},
 		{"", ""},

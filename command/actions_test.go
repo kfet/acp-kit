@@ -330,3 +330,36 @@ func TestCapabilitiesSetSeparately(t *testing.T) {
 		t.Fatal("scheduler without controller")
 	}
 }
+
+// idPoster is a Poster that also reports the ids of what it posted.
+type idPoster struct {
+	ids []string
+	err error
+}
+
+func (p *idPoster) PostTo(string, string) error { return errors.New("PostTo must not be used") }
+func (p *idPoster) PostToIDs(string, string) ([]string, error) {
+	return p.ids, p.err
+}
+
+func TestPostIDs(t *testing.T) {
+	if _, err := New(nil).PostIDs("c", "hi"); err == nil {
+		t.Fatal("want refusal without a poster")
+	}
+	b := New(nil)
+	b.SetPoster(&idPoster{ids: []string{"7", "8"}})
+	if _, err := b.PostIDs("c", " "); err == nil {
+		t.Fatal("want refusal for empty text")
+	}
+	ids, err := b.PostIDs("c", "hi")
+	if err != nil || strings.Join(ids, ",") != "7,8" {
+		t.Fatalf("ids = %v, %v", ids, err)
+	}
+	c := &loopbackCtrl{}
+	plain := New(nil)
+	plain.SetController(c)
+	ids, err = plain.PostIDs("c", "hi")
+	if err != nil || ids != nil || len(c.posted) != 1 {
+		t.Fatalf("plain = %v, %v, %v", ids, err, c.posted)
+	}
+}

@@ -199,7 +199,7 @@ func (t *Tools) Tools() []Tool {
 			Name: ToolPost,
 			Description: "Send a message into this conversation right now, outside the answer you are streaming. " +
 				"Use it for progress on a long task, or to report a result that arrives after the turn " +
-				"that started it has ended. It always posts here — there is no way to address anywhere else.",
+				"that started it has ended. When the relay knows them, the result gives the posted message id(s). It always posts here — there is no way to address anywhere else.",
 			Schema: objectSchemaReq(map[string]any{
 				"text": strProp("Message body, in the chat's markdown."),
 			}, "text"),
@@ -210,10 +210,14 @@ func (t *Tools) Tools() []Tool {
 				if err := decode(args, &a); err != nil {
 					return "", err
 				}
-				if err := t.cfg.Broker.Post(conv, a.Text); err != nil {
+				ids, err := t.cfg.Broker.PostIDs(conv, a.Text)
+				if err != nil {
 					return "", err
 				}
-				return "Posted to this conversation.", nil
+				if len(ids) == 0 {
+					return "Posted to this conversation.", nil
+				}
+				return "Posted to this conversation as message id(s): " + strings.Join(ids, ", ") + ".", nil
 			}),
 		})
 	}

@@ -56,6 +56,15 @@ type Poster interface {
 	PostTo(convID, text string) error
 }
 
+// IDPoster is an OPTIONAL refinement of Poster for a relay whose posts
+// have message ids the agent can act on later — for example to add a
+// reaction to the message it just posted. PostToIDs returns the ids of
+// every message the post put on the surface, oldest first. A relay
+// that has no such ids implements only Poster.
+type IDPoster interface {
+	PostToIDs(convID, text string) ([]string, error)
+}
+
 // Scheduler is the OPTIONAL capability behind scheduled prompts. A
 // relay implements it over acp-kit/schedule; see that package for the
 // runaway bounds, which are the reason this is not simply a timer.
@@ -297,6 +306,23 @@ func (b *Broker) Post(convID, text string) error {
 		return errors.New("nothing to post")
 	}
 	return p.PostTo(convID, text)
+}
+
+// PostIDs is Post, but returns the ids of the posted messages when the
+// relay's Poster is an IDPoster. Otherwise it posts with PostTo and
+// returns no ids.
+func (b *Broker) PostIDs(convID, text string) ([]string, error) {
+	p, ok := b.poster()
+	if !ok {
+		return nil, errors.New("this relay cannot post out of band")
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("nothing to post")
+	}
+	if ip, ok := p.(IDPoster); ok {
+		return ip.PostToIDs(convID, text)
+	}
+	return nil, p.PostTo(convID, text)
 }
 
 // Schedule arms a prompt to be injected into the conversation later.
