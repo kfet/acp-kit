@@ -8,6 +8,11 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `command.SkillBundle`: a built-in `relay-commands` skill, generated at runtime from the broker command table and the passthrough allowlist, telling the agent which `!` command to give the user (e.g. `!mcp login slack`, and that `!login` is provider OAuth, not MCP auth). Load it with `skills.LoadBuiltinIn` under its own app prefix.
+- `command.BrokerCommands` and `command.PassthroughCommands` expose the command tables; `!help` now renders from the same table.
+
 ## [0.35.0] - 2026-10-20
 
 ### Added

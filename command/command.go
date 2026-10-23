@@ -560,21 +560,11 @@ func (b *Broker) help() *Outcome {
 	s := DisplaySigil
 	var sb strings.Builder
 	sb.WriteString("Available commands:\n\n")
-	sb.WriteString("- `" + s + "help` — show this message\n")
-	if b.ctrl != nil {
-		sb.WriteString("- `" + s + "status` — model, session and relay info\n")
-		sb.WriteString("- `" + s + "model [filter|id]` (or `" + s + "m`) — list/filter models, or switch; fuzzy ids like `anth/opus55` work\n")
-		sb.WriteString("- `" + s + "new` — start a fresh session (clears context)\n")
-		if _, ok := b.stopper(); ok {
-			sb.WriteString("- `" + s + "stop` — interrupt the turn currently running\n")
-		}
-		if _, ok := b.scheduler(); ok {
-			sb.WriteString("- `" + s + "schedules` — list the prompts the agent has armed here\n")
-			sb.WriteString("- `" + s + "unschedule <id>` — cancel one of them\n")
+	for _, c := range brokerCommands {
+		if c.avail(b) {
+			sb.WriteString("- " + c.Usage() + " — " + c.Help + "\n")
 		}
 	}
-	sb.WriteString("- `" + s + "login [provider|cancel]` — connect a provider (e.g. `" + s +
-		"login anthropic`), or abort a login in progress\n")
 	for _, l := range b.extraHelp {
 		sb.WriteString(l)
 	}
