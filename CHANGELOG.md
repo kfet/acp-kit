@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `client.AgentProc.ExtMethod`: send an agent extension request (for example fir's `_fir/mcp/tools/call`) for a session. It sets `sessionId` to the wire id, so the call survives a respawn.
+
 ## [0.36.0] - 2026-10-23
 
 ### Added
