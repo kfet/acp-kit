@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-25
+
 ### Fixed
 
 - `MatchModels` (`!model <filter>`, `list_models`) now returns every model whose id or name holds the filter. Before, only the top fuzzy tier was returned, so "sakana" named one model of many.
