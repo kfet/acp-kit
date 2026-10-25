@@ -215,8 +215,9 @@ func (b *Broker) Status(convID string) (string, error) {
 
 // MatchModels selects the models a `!model <filter>` listing names, in
 // ranked order. An empty filter matches everything (agent order);
-// otherwise the fuzzy ResolveModel candidates win, falling back to a
-// case-insensitive substring of the model ID when nothing resolves.
+// otherwise the top-tier fuzzy ResolveModel candidates come first,
+// then every other model whose ID or Name holds the filter as a
+// case-insensitive substring, in agent order.
 // The result is always a fresh slice, never an alias of all.
 //
 // Exported because a relay may render the SAME selection onto a
@@ -228,14 +229,25 @@ func (b *Broker) Status(convID string) (string, error) {
 // ModelList itself uses it.
 func MatchModels(all []client.ModelInfo, filter string) []client.ModelInfo {
 	f := strings.ToLower(strings.TrimSpace(filter))
-	if f != "" {
-		if _, c := ResolveModel(all, filter); len(c) > 0 {
-			return c
-		}
-	}
 	matched := make([]client.ModelInfo, 0, len(all))
+	if f == "" {
+		return append(matched, all...)
+	}
+	// The best-ranked fuzzy candidates go first. They are only the
+	// TOP tier, so they never limit the result: every model whose id
+	// or name holds the filter follows, in agent order.
+	_, ranked := ResolveModel(all, filter)
+	seen := make(map[string]bool, len(ranked))
+	for _, m := range ranked {
+		seen[m.ID] = true
+		matched = append(matched, m)
+	}
 	for _, m := range all {
-		if f == "" || strings.Contains(strings.ToLower(m.ID), f) {
+		if seen[m.ID] {
+			continue
+		}
+		if strings.Contains(strings.ToLower(m.ID), f) || strings.Contains(strings.ToLower(m.Name), f) {
+			seen[m.ID] = true
 			matched = append(matched, m)
 		}
 	}

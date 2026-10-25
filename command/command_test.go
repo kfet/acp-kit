@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -608,6 +609,36 @@ func TestMatchModels(t *testing.T) {
 	// Never an alias of the input: a caller may sort or truncate it.
 	if got := MatchModels(all, ""); &got[0] == &all[0] {
 		t.Fatal("MatchModels aliased its input slice")
+	}
+}
+
+// Regression: the top fuzzy tier used to be the WHOLE result, so
+// "sakana" over a big list named one model and hid the rest.
+func TestMatchModelsLargeList(t *testing.T) {
+	var all []client.ModelInfo
+	for i := 0; i < 1500; i++ {
+		all = append(all, client.ModelInfo{ID: fmt.Sprintf("prov%d/model-%d", i%40, i)})
+	}
+	want := []string{"sakana/fugu", "sakana/fugu-ultra", "openrouter/sakana/fugu-ultra",
+		"openrouter/sakana/fugu-max", "openrouter/sakana/sakana-namazu"}
+	for i, id := range want {
+		all = append(all[:i*300], append([]client.ModelInfo{{ID: id}}, all[i*300:]...)...)
+	}
+	all = append(all, client.ModelInfo{ID: "x/koi", Name: "Sakana Koi"})
+	got := map[string]bool{}
+	for _, m := range MatchModels(all, "SAKANA") {
+		got[m.ID] = true
+	}
+	for _, id := range append(want, "x/koi") {
+		if !got[id] {
+			t.Errorf("sakana filter misses %s", id)
+		}
+	}
+	if len(got) != len(want)+1 {
+		t.Errorf("sakana filter = %d models, want %d", len(got), len(want)+1)
+	}
+	if n := len(MatchModels(all, "fugu")); n != 4 {
+		t.Errorf("fugu filter = %d models, want 4", n)
 	}
 }
 
