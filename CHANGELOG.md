@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-29
+
 ### Added
 
 - `origin`: new package defining the `dev.acp-kit.origin/v1` `_meta` entry (platform, team, user, channel, thread, message, DM and mention flags) with encode/decode helpers and a context carrier (`origin.With`).
