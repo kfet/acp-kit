@@ -630,7 +630,7 @@ func (a *AgentProc) recoverSession(ctx context.Context, g *gen, sid acp.SessionI
 	log := a.logger().With("session", sid, "wire", rec.wire)
 	if caps.ResumeSession {
 		resp, err := rpc[sessionResponse](ctx, g, "session/resume", resumeSessionRequest{
-			SessionId: string(rec.wire), Cwd: rec.cwd, McpServers: mcp,
+			SessionId: string(rec.wire), Cwd: rec.cwd, McpServers: mcp, Meta: originOnly(rec.meta),
 		})
 		if err == nil {
 			a.adopt(sid, rec, g, rec.wire, resp)
@@ -645,7 +645,7 @@ func (a *AgentProc) recoverSession(ctx context.Context, g *gen, sid acp.SessionI
 	if caps.LoadSession {
 		a.setMuted(rec.wire, true)
 		resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionLoad, acp.LoadSessionRequest{
-			SessionId: rec.wire, Cwd: rec.cwd, McpServers: mcp,
+			SessionId: rec.wire, Cwd: rec.cwd, McpServers: mcp, Meta: originOnly(rec.meta),
 		})
 		a.setMuted(rec.wire, false)
 		if err == nil {

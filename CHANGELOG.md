@@ -8,6 +8,11 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+
+- `origin`: new package defining the `dev.acp-kit.origin/v1` `_meta` entry (platform, team, user, channel, thread, message, DM and mention flags) with encode/decode helpers and a context carrier (`origin.With`).
+- `client`: an origin carried by the call's context is sent in `_meta` on session/new, session/resume, session/fork and every session/prompt, and re-sent on resume/load after an agent respawn.
+
 ## [0.37.3] - 2026-10-29
 
 ### Fixed

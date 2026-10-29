@@ -33,6 +33,8 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/kfet/acp-kit/origin"
 )
 
 // SessionUpdateSink receives streaming updates for a single ACP session.
@@ -123,6 +125,7 @@ type resumeSessionRequest struct {
 	SessionId  string          `json:"sessionId"`
 	Cwd        string          `json:"cwd,omitempty"`
 	McpServers []acp.McpServer `json:"mcpServers,omitempty"`
+	Meta       map[string]any  `json:"_meta,omitempty"`
 }
 
 // Config configures an AgentProc.
@@ -444,6 +447,7 @@ func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink Ses
 		}
 		req.Meta = meta
 	}
+	req.Meta = withOrigin(ctx, req.Meta)
 	g, err := a.live(ctx)
 	if err != nil {
 		return "", err
@@ -687,11 +691,12 @@ func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.Sessi
 		SessionId:  string(sid),
 		Cwd:        cwd,
 		McpServers: a.cfg.mcpFor(cwd),
+		Meta:       withOrigin(ctx, nil),
 	})
 	if err != nil {
 		return err
 	}
-	a.track(sid, cwd, nil, g)
+	a.track(sid, cwd, withOrigin(ctx, nil), g)
 	a.mu.Lock()
 	a.sinks[sid] = sink
 	a.noteConfig(sid, resp.ConfigOptions)
@@ -735,6 +740,7 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 	if at != "" {
 		req.Meta = map[string]any{"at": at}
 	}
+	req.Meta = withOrigin(ctx, req.Meta)
 	resp, err := rpc[sessionResponse](ctx, g, "session/fork", req)
 	if err != nil {
 		return "", err
@@ -742,7 +748,7 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 	if resp.SessionId == "" {
 		return "", errors.New("acp agent: session/fork returned no sessionId")
 	}
-	a.track(resp.SessionId, cwd, nil, g)
+	a.track(resp.SessionId, cwd, withOrigin(ctx, nil), g)
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
 	a.noteConfig(resp.SessionId, resp.ConfigOptions)
@@ -831,6 +837,7 @@ func (a *AgentProc) PromptTurn(ctx context.Context, sid acp.SessionId, prompt []
 		resp, err := rpc[acp.PromptResponse](rctx, g, acp.AgentMethodSessionPrompt, acp.PromptRequest{
 			SessionId: wire,
 			Prompt:    prompt,
+			Meta:      withOrigin(ctx, nil),
 		})
 		ch <- result{resp, err}
 	}()
@@ -1091,4 +1098,20 @@ func (a *AgentProc) writeTextFile(params acp.WriteTextFileRequest) error {
 		return err
 	}
 	return os.WriteFile(params.Path, []byte(params.Content), 0o644) //nolint:gosec // ditto
+}
+
+// withOrigin merges the origin carried by ctx (see package origin) into a
+// request's _meta. No origin leaves meta untouched, so callers that never
+// set one put nothing new on the wire.
+func withOrigin(ctx context.Context, meta map[string]any) map[string]any {
+	o, _ := origin.From(ctx)
+	return o.Merge(meta)
+}
+
+// originOnly keeps just the origin entry of a recorded session/new _meta,
+// for re-sending on session/resume and session/load after a respawn. It is
+// the creating call's origin, not the in-flight prompt's.
+func originOnly(meta map[string]any) map[string]any {
+	o, _ := origin.FromMeta(meta)
+	return o.Merge(nil)
 }

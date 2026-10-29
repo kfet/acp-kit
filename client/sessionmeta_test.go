@@ -67,7 +67,7 @@ func TestNewSessionWithMeta_ExtraEntries(t *testing.T) {
 	pc := startPaired(t, Config{Command: []string{"x"}}, captureNew(&seen))
 
 	sid, err := pc.agent.NewSessionWithMeta(context.Background(), "/cwd", &recSink{}, nil,
-		map[string]any{"host": "zboxserver"})
+		map[string]any{"host": "build.example.com"})
 	if err != nil {
 		t.Fatalf("NewSessionWithMeta: %v", err)
 	}
@@ -78,8 +78,8 @@ func TestNewSessionWithMeta_ExtraEntries(t *testing.T) {
 	if !present {
 		t.Fatalf("_meta missing: %s", seen)
 	}
-	if meta["host"] != "zboxserver" {
-		t.Fatalf("_meta.host = %#v, want zboxserver", meta["host"])
+	if meta["host"] != "build.example.com" {
+		t.Fatalf("_meta.host = %#v, want build.example.com", meta["host"])
 	}
 	if _, ok := meta["session.systemPrompt"]; ok {
 		t.Fatal("session.systemPrompt must be absent when no blocks are passed")
