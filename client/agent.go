@@ -763,9 +763,12 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 // minute — so the notification is sent here, once, rather than left to
 // every caller to remember.
 //
-// It is best-effort and bounded: the notification is a single write to
-// the child's stdin, and a child wedged badly enough not to read it is
-// past helping. The prompt error is returned regardless.
+// Prompt then waits for the agent to answer the cancelled prompt, so
+// the caller's next prompt reaches an agent whose run has unwound.
+//
+// It is best-effort and bounded by cancelNotifyTimeout: a child wedged
+// badly enough not to answer is past helping. ctx's error is returned
+// regardless.
 func (a *AgentProc) Prompt(ctx context.Context, sid acp.SessionId, prompt []acp.ContentBlock) (acp.StopReason, error) {
 	res, err := a.PromptTurn(ctx, sid, prompt)
 	return res.Stop, err
@@ -812,23 +815,51 @@ func (a *AgentProc) PromptTurn(ctx context.Context, sid acp.SessionId, prompt []
 	if err != nil {
 		return TurnResult{}, err
 	}
-	resp, err := rpc[acp.PromptResponse](ctx, g, acp.AgentMethodSessionPrompt, acp.PromptRequest{
-		SessionId: wire,
-		Prompt:    prompt,
-	})
-	if err != nil {
-		if ctx.Err() != nil {
-			cctx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelNotifyTimeout)
-			_ = a.Cancel(cctx, sid)
-			stop()
-		}
-		return TurnResult{}, err
+	// The request runs detached from ctx, so a cancelled ctx does not
+	// abandon it: the agent's own answer to the cancelled prompt is what
+	// tells us its run has unwound. A caller that sent its next prompt
+	// before that answer would reach an agent still busy with the old
+	// run.
+	type result struct {
+		resp acp.PromptResponse
+		err  error
 	}
-	return TurnResult{Stop: resp.StopReason, LeafID: leafIDOf(resp.Meta)}, nil
+	rctx, stopReq := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopReq()
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := rpc[acp.PromptResponse](rctx, g, acp.AgentMethodSessionPrompt, acp.PromptRequest{
+			SessionId: wire,
+			Prompt:    prompt,
+		})
+		ch <- result{resp, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return TurnResult{}, r.err
+		}
+		return TurnResult{Stop: r.resp.StopReason, LeafID: leafIDOf(r.resp.Meta)}, nil
+	case <-ctx.Done():
+	}
+	cctx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelNotifyTimeout)
+	defer stop()
+	_ = a.Cancel(cctx, sid)
+	select {
+	case r := <-ch:
+		// An agent that died while unwinding must still read as dead,
+		// so supervision can tell it from a plain cancel.
+		if errors.Is(r.err, ErrAgentDied) {
+			return TurnResult{}, r.err
+		}
+	case <-cctx.Done():
+	}
+	return TurnResult{}, ctx.Err()
 }
 
 // cancelNotifyTimeout bounds the courtesy session/cancel Prompt sends
-// after its own context was cancelled. See Prompt.
+// after its own context was cancelled, and the wait for the agent to
+// answer the cancelled prompt after it. See Prompt.
 const cancelNotifyTimeout = 5 * time.Second
 
 // Cancel requests cancellation of an in-flight prompt for a session.

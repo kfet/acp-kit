@@ -861,3 +861,52 @@ func TestPromptErrorWithLiveCtxDoesNotCancel(t *testing.T) {
 		t.Fatalf("sent %d spurious session/cancel notifications", n)
 	}
 }
+
+// TestPromptCancelWaitsForAgentToUnwind is the regression test for a
+// steer that was never answered: after session/cancel, Prompt must wait
+// for the agent's own response to the cancelled prompt before it
+// returns. Returning at once let the caller send its next session/prompt
+// while the agent was still unwinding the cancelled run, and the agent
+// (fir) answered that prompt with an empty end_turn.
+func TestPromptCancelWaitsForAgentToUnwind(t *testing.T) {
+	gotCancel := make(chan struct{})
+	unwound := make(chan struct{})
+	release := make(chan struct{})
+	pc := startPaired(t, Config{}, func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{"protocolVersion": acp.ProtocolVersionNumber}, nil
+		case acp.AgentMethodSessionPrompt:
+			<-gotCancel
+			<-release
+			close(unwound)
+			return map[string]any{"stopReason": "cancelled"}, nil
+		case acp.AgentMethodSessionCancel:
+			close(gotCancel)
+		}
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := pc.agent.Prompt(ctx, "sid", []acp.ContentBlock{acp.TextBlock("hi")})
+		done <- err
+	}()
+	cancel()
+	<-gotCancel
+	select {
+	case <-done:
+		t.Fatal("Prompt returned before the agent answered the cancelled prompt")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	select {
+	case <-unwound:
+	default:
+		t.Fatal("Prompt returned before the agent unwound")
+	}
+}

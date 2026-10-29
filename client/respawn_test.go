@@ -645,3 +645,28 @@ func TestFinishedAgentFailsEveryCall(t *testing.T) {
 		}
 	}
 }
+
+// An agent that dies while Prompt waits for it to unwind a cancelled
+// turn reads as dead, not as a plain cancel.
+func TestCancelledTurnDeathIsReported(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	a, _ := supervised(t, ctx, nil)
+	sid, err := a.NewSession(ctx, t.TempDir(), &recSink{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx, pcancel := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := a.Prompt(pctx, sid, text("hang"))
+		errc <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	pcancel()
+	time.Sleep(100 * time.Millisecond)
+	killChild(t, a)
+	if err := <-errc; !errors.Is(err, ErrAgentDied) {
+		t.Fatalf("err = %v, want ErrAgentDied", err)
+	}
+}

@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `client`: when its context is cancelled, `Prompt` / `PromptTurn` now waits (bounded by 5s) for the agent to answer the cancelled `session/prompt` after it sends `session/cancel`. Before, it returned at once, so the caller's next prompt reached an agent that was still unwinding the cancelled run. An agent that dies in that wait still fails the turn with `ErrAgentDied`.
+
 ## [0.37.1] - 2026-10-25
 
 ### Fixed
