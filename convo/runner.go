@@ -47,6 +47,18 @@ func (m *Manager) exec(t *Turn, tctx context.Context, cancel context.CancelFunc,
 	func() {
 		defer m.active.End(t)
 		defer cancel()
+		// A superseding turn waits for the turn it displaced to unwind,
+		// so the agent never gets the new prompt while it still runs
+		// the cancelled one. Superseded in turn while waiting, it never
+		// runs, but it still ends only after its predecessor: the turn
+		// that displaced it waits on the whole chain.
+		if d := t.displaced; d != nil {
+			t.displaced = nil
+			<-d.ended
+			if tctx.Err() != nil {
+				return
+			}
+		}
 		if err := job.Run(tctx, t); err != nil {
 			if m.cfg.OnError != nil {
 				m.cfg.OnError(job.Conv, err)

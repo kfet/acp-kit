@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -441,3 +442,65 @@ func TestEffectiveModelPerSession(t *testing.T) {
 }
 
 var _ ModelReporter = (*client.AgentProc)(nil)
+
+// TestSupersedeWaitsForDisplacedTurn is the regression test for a steer
+// that was never answered: the superseding turn must not run until the
+// turn it displaced has unwound. Running at once sent the new prompt to
+// an agent still busy unwinding the cancelled one.
+func TestSupersedeWaitsForDisplacedTurn(t *testing.T) {
+	m := newM(t, Config{Agent: &fakeAgent{}, Mode: Supersede})
+	ctx := ctxT(t)
+	cancelled := make(chan struct{})
+	unwind := make(chan struct{})
+	var firstDone atomic.Bool
+	m.Start(ctx, Job{Conv: "c", Run: func(ctx context.Context, _ *Turn) error {
+		<-ctx.Done()
+		close(cancelled)
+		<-unwind
+		firstDone.Store(true)
+		return nil
+	}})
+	ran := make(chan bool, 1)
+	m.Start(ctx, Job{Conv: "c", Run: func(context.Context, *Turn) error {
+		ran <- firstDone.Load()
+		return nil
+	}})
+	<-cancelled
+	close(unwind)
+	if !<-ran {
+		t.Fatal("superseding turn ran before the displaced turn unwound")
+	}
+	_ = m.WaitIdle(ctx)
+}
+
+// A turn superseded while it still waits for its own predecessor never
+// runs; its After still does, and the turn after it still waits for the
+// first one.
+func TestSupersededWhileWaitingSkipsRun(t *testing.T) {
+	m := newM(t, Config{Agent: &fakeAgent{}, Mode: Supersede})
+	ctx := ctxT(t)
+	unwind := make(chan struct{})
+	cancelled := make(chan struct{})
+	m.Start(ctx, Job{Conv: "c", Run: func(ctx context.Context, _ *Turn) error {
+		<-ctx.Done()
+		close(cancelled)
+		<-unwind
+		return nil
+	}})
+	after := make(chan struct{})
+	m.Start(ctx, Job{Conv: "c",
+		Run:   func(context.Context, *Turn) error { t.Error("waiting turn ran"); return nil },
+		After: func(*Turn) { close(after) },
+	})
+	<-cancelled
+	ran := make(chan bool, 1)
+	var unwound atomic.Bool
+	m.Start(ctx, Job{Conv: "c", Run: func(context.Context, *Turn) error { ran <- unwound.Load(); return nil }})
+	unwound.Store(true)
+	close(unwind)
+	<-after
+	if !<-ran {
+		t.Fatal("third turn ran before the first unwound")
+	}
+	_ = m.WaitIdle(ctx)
+}

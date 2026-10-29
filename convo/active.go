@@ -25,7 +25,10 @@ type Turn struct {
 
 	cancel context.CancelFunc
 	ended  chan struct{}
-	once   sync.Once
+	// displaced is the turn this one superseded, if any. The Manager
+	// runs this turn only once displaced has ended.
+	displaced *Turn
+	once      sync.Once
 }
 
 // Ended is closed when the turn has fully unwound (Active.End).
@@ -82,6 +85,7 @@ func (a *Active) Supersede(ctx context.Context, conv string, cancel context.Canc
 	t := newTurn(conv, cancel, value)
 	a.mu.Lock()
 	old, ok := a.m[conv]
+	t.displaced = old
 	a.m[conv] = t
 	a.cond.Broadcast()
 	a.mu.Unlock()

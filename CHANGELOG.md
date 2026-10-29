@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `convo`: in `Supersede` mode a new turn now runs only after the turn it displaced has unwound. Before, it ran at once, so the agent got the new prompt while it was still unwinding the cancelled one and answered it with an empty turn. A turn that is superseded while it waits never runs.
+
 ## [0.37.2] - 2026-10-29
 
 ### Fixed
