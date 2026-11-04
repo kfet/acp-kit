@@ -6,7 +6,8 @@
 //
 // The user-facing surface is deliberately small: !help, !status,
 // !model [filter|id], !new, !stop, !schedules, !unschedule <id>,
-// !login [provider|cancel]. Older spellings (!models, !relay, !bot,
+// !login [provider|cancel], and — where the agent and relay support it
+// — !mcp login <server>|cancel (see mcplogin.go). Older spellings (!models, !relay, !bot,
 // !cancel-login, !whoami, !reset) still work as undocumented aliases
 // so nothing a user has learned ever breaks.
 //
@@ -290,6 +291,31 @@ type pendingEntry struct {
 	// back on call 2 / cancel so the agent can disambiguate concurrent
 	// pending logins for the same methodID.
 	authID string
+	// sessionID is the ACP session a session-scoped login (`!mcp
+	// login`) runs in; "" for a provider login.
+	sessionID string
+	// mcpServer is the MCP server being authorised; "" for a provider
+	// login. It only changes the wording of the replies.
+	mcpServer string
+}
+
+// retryHint is the command that starts this login over.
+func (e pendingEntry) retryHint() string {
+	if e.mcpServer != "" {
+		return DisplaySigil + "mcp login " + e.mcpServer
+	}
+	return DisplaySigil + "login " + strings.TrimPrefix(e.methodID, "oauth-")
+}
+
+// authenticate makes call 2 or a cancel for this login, scoped to its
+// session when it has one.
+func (b *Broker) authenticate(ctx context.Context, e pendingEntry, redirect string, cancel bool) (client.AuthResult, error) {
+	if e.sessionID != "" {
+		// Only an mcp login sets sessionID, and startMCP only runs
+		// when the Authenticator is a SessionAuthenticator.
+		return mustSessionAuth(b.a).AuthenticateSession(ctx, e.sessionID, e.methodID, e.authID, redirect, cancel)
+	}
+	return b.a.Authenticate(ctx, e.methodID, e.authID, redirect, cancel)
 }
 
 // New constructs a Broker.
@@ -448,7 +474,7 @@ func (b *Broker) IsCommand(text string) bool {
 		return false
 	}
 	body = foldVerb(body)
-	return body == "help" || isLoginBody(body) || b.isSessionBody(body)
+	return body == "help" || isLoginBody(body) || b.isSessionBody(body) || b.isMCPLoginBody(body)
 }
 
 // Outcome is what the HTTP handler should render to the user. Exactly
@@ -486,7 +512,9 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 
 	// Pasted redirect URL for an in-flight login wins over command parsing.
 	if entry, ok := b.peek(convID); ok {
-		if hasSigil && isCancelLoginBody(body) {
+		// One login slot per conversation, so either cancel spelling
+		// aborts whichever login is pending.
+		if hasSigil && (isCancelLoginBody(body) || isMCPCancelBody(body)) {
 			return b.cancel(ctx, convID, entry)
 		}
 		return b.complete(ctx, convID, entry, t)
@@ -497,8 +525,10 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	}
 
 	switch {
-	case isCancelLoginBody(body):
+	case isCancelLoginBody(body) || (isMCPCancelBody(body) && b.mcpLoginAvail()):
 		return &Outcome{Text: "No login in progress."}, nil
+	case b.isMCPLoginBody(body):
+		return b.startMCP(ctx, convID, mcpServerArg(body))
 	case body == "login" || body == "logins":
 		return b.list(), nil
 	case strings.HasPrefix(body, "login "):
@@ -729,7 +759,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 	b.mu.Lock()
 	if existing, ok := b.pending[convID]; ok {
 		b.mu.Unlock()
-		return &Outcome{Text: fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `%slogin cancel`.", existing.methodID, DisplaySigil)}, nil
+		return &Outcome{Text: alreadyPending(existing)}, nil
 	}
 	b.mu.Unlock()
 
@@ -765,19 +795,22 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 // complete submits the pasted redirect URL.
 func (b *Broker) complete(ctx context.Context, convID string, entry pendingEntry, redirect string) (*Outcome, error) {
 	if redirect == "" {
-		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%slogin cancel`.", DisplaySigil)}, nil
+		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%s`.", entry.cancelHint())}, nil
 	}
-	res, err := b.a.Authenticate(ctx, entry.methodID, entry.authID, redirect, false)
+	res, err := b.authenticate(ctx, entry, redirect, false)
 	// Always drop the pending entry — a failed paste means the user must
 	// start over (matches the TUI: a bad paste aborts and prints the error).
 	b.mu.Lock()
 	delete(b.pending, convID)
 	b.mu.Unlock()
 	if err != nil {
-		return &Outcome{Text: fmt.Sprintf("❌ Login failed: %v\n\nSend `%slogin %s` to try again.", err, DisplaySigil, strings.TrimPrefix(entry.methodID, "oauth-"))}, nil
+		return &Outcome{Text: fmt.Sprintf("❌ Login failed: %v\n\nSend `%s` to try again.", err, entry.retryHint())}, nil
 	}
 	switch res.State {
 	case "ok", "":
+		if entry.mcpServer != "" {
+			return &Outcome{Text: mcpAuthorised(entry.mcpServer)}, nil
+		}
 		return &Outcome{Text: fmt.Sprintf("✅ Authenticated (%s).", entry.methodID)}, nil
 	case "cancelled":
 		return &Outcome{Text: "Login cancelled."}, nil
@@ -791,7 +824,7 @@ func (b *Broker) cancel(ctx context.Context, convID string, entry pendingEntry) 
 	b.mu.Lock()
 	delete(b.pending, convID)
 	b.mu.Unlock()
-	if _, err := b.a.Authenticate(ctx, entry.methodID, entry.authID, "", true); err != nil {
+	if _, err := b.authenticate(ctx, entry, "", true); err != nil {
 		return &Outcome{Text: fmt.Sprintf("Login cancelled (agent reported: %v).", err)}, nil
 	}
 	return &Outcome{Text: "Login cancelled."}, nil

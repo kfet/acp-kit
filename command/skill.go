@@ -56,8 +56,11 @@ Commands marked (if supported) exist only on relays with that capability;
 	}
 	b.WriteString(`
 ` + "`" + s + "login`" + ` is the relay's provider-OAuth login (model providers such as
-anthropic). It is NOT how MCP servers authenticate — for those use the
-` + "`" + s + "mcp`" + ` passthrough below.
+anthropic). It is NOT how MCP servers authenticate — for those the user
+sends ` + "`" + s + "mcp login <server>`" + `: the relay replies with a URL, the user
+authorises in a browser, then pastes back the URL of the page they land
+on (even if it fails to load). Where the relay does not handle it itself,
+it goes to the ` + "`" + s + "mcp`" + ` passthrough below.
 
 ## Agent passthrough commands
 

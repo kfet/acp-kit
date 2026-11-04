@@ -12,10 +12,13 @@ const (
 	NeedStopper
 	// NeedScheduler: requires a Controller and a Scheduler.
 	NeedScheduler
+	// NeedMCPLogin: requires a SessionAuthenticator and a Controller
+	// implementing SessionLocator.
+	NeedMCPLogin
 )
 
 // optional reports whether the command exists only on some relays.
-func (n Need) optional() bool { return n == NeedStopper || n == NeedScheduler }
+func (n Need) optional() bool { return n == NeedStopper || n == NeedScheduler || n == NeedMCPLogin }
 
 // BrokerCommand documents one command the broker itself answers (as
 // opposed to a passthrough command forwarded to the agent).
@@ -50,6 +53,8 @@ func (c BrokerCommand) avail(b *Broker) bool {
 	case NeedScheduler:
 		_, ok := b.scheduler()
 		return ok && b.ctrl != nil
+	case NeedMCPLogin:
+		return b.mcpLoginAvail()
 	}
 	return true
 }
@@ -65,6 +70,7 @@ var brokerCommands = []BrokerCommand{
 	{"schedules", "", "", "list the prompts the agent has armed here", NeedScheduler},
 	{"unschedule", "<id>", "", "cancel one of them", NeedScheduler},
 	{"login", "[provider|cancel]", "", "connect a provider (e.g. `" + DisplaySigil + "login anthropic`), or abort a login in progress", Always},
+	{"mcp login", "<server>|cancel", "", "authorise an MCP server that needs OAuth (e.g. `" + DisplaySigil + "mcp login github`): open the URL, then paste back the URL you land on", NeedMCPLogin},
 }
 
 // BrokerCommands returns a copy of the broker's own command table.

@@ -58,7 +58,7 @@ func startPaired(t *testing.T, cfg Config, handler func(ctx context.Context, met
 // happyAgent answers a useful subset of methods for the broad tests below.
 func happyAgent(t *testing.T) func(ctx context.Context, method string, params json.RawMessage) (any, *acp.RequestError) {
 	t.Helper()
-	return func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+	return func(_ context.Context, method string, params json.RawMessage) (any, *acp.RequestError) {
 		switch method {
 		case acp.AgentMethodInitialize:
 			return map[string]any{
@@ -108,6 +108,20 @@ func happyAgent(t *testing.T) func(ctx context.Context, method string, params js
 				},
 			}, nil
 		case acp.AgentMethodAuthenticate:
+			// A session-scoped call echoes what it was sent, so the
+			// test can see the wire shape.
+			var req struct {
+				MethodID string `json:"methodId"`
+				Meta     struct {
+					Auth struct {
+						SessionID string `json:"sessionId"`
+					} `json:"auth"`
+				} `json:"_meta"`
+			}
+			_ = json.Unmarshal(params, &req)
+			if sid := req.Meta.Auth.SessionID; sid != "" {
+				return map[string]any{"_meta": map[string]any{"auth": map[string]any{"state": "ok", "id": sid, "url": req.MethodID}}}, nil
+			}
 			return map[string]any{"_meta": map[string]any{"auth": map[string]any{"state": "needs_redirect", "id": "pending-1", "url": "https://x/y", "instructions": "go here"}}}, nil
 		}
 		return nil, acp.NewMethodNotFound(method)
@@ -219,6 +233,12 @@ func TestPipeAndDispatch(t *testing.T) {
 	}
 	if _, err := a.Authenticate(ctx, "oauth", "id-1", "https://r", true); err != nil {
 		t.Fatalf("Authenticate redirect/cancel: %v", err)
+	}
+	// mcp:* ids are never advertised at initialize; they must still be
+	// sent, with the session id.
+	mres, err := a.AuthenticateSession(ctx, "sess-A", "mcp:gh", "", "", false)
+	if err != nil || mres.State != "ok" || mres.ID != "sess-A" || mres.URL != "mcp:gh" {
+		t.Fatalf("AuthenticateSession = %#v, %v", mres, err)
 	}
 
 	// Drive a server-initiated session/update to exercise dispatch + sinkFor.

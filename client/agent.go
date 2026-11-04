@@ -908,7 +908,20 @@ func (a *AgentProc) RebindSink(sid acp.SessionId, sink SessionUpdateSink) {
 // _meta.auth.interactive extension; older agents will run the legacy
 // blocking flow and may return an empty AuthResult.
 func (a *AgentProc) Authenticate(ctx context.Context, methodID, id, redirect string, cancel bool) (AuthResult, error) {
+	return a.AuthenticateSession(ctx, "", methodID, id, redirect, cancel)
+}
+
+// AuthenticateSession is Authenticate scoped to one ACP session: a
+// non-empty sessionID is sent as _meta.auth.sessionId. Session-scoped
+// methods need it — "mcp:<server>" logs in an MCP server, and MCP
+// servers live per session. Those ids are dynamic and never advertised
+// at initialize, so methodID is sent as given and is NOT checked
+// against AuthMethods.
+func (a *AgentProc) AuthenticateSession(ctx context.Context, sessionID, methodID, id, redirect string, cancel bool) (AuthResult, error) {
 	authMeta := map[string]any{"interactive": true}
+	if sessionID != "" {
+		authMeta["sessionId"] = sessionID
+	}
 	if id != "" {
 		authMeta["id"] = id
 	}

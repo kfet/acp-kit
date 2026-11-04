@@ -621,6 +621,17 @@ func (c controller) RelayInfo(token string) command.RelayInfo {
 	return ri
 }
 
+// ACPSessionID implements command.SessionLocator: the conversation's
+// live ACP session, never creating one.
+func (c controller) ACPSessionID(token string) (string, bool) {
+	conv, ok := c.resolve(token)
+	if !ok || c.m.cfg.Sessions == nil {
+		return "", false
+	}
+	sid, _, live := c.m.cfg.Sessions.Live(conv)
+	return string(sid), live
+}
+
 // StopTurn implements command.TurnStopper.
 func (c stopController) StopTurn(token string) bool {
 	conv, ok := c.resolve(token)

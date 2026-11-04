@@ -8,6 +8,11 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `command`: `!mcp login <server>` is handled by the broker instead of passed through to `/mcp login`. It drives the interactive `authenticate` protocol with methodId `mcp:<server>` and `_meta.auth.sessionId`, so a user whose browser is not on the agent host can paste the landing URL back. `!mcp login cancel` and `!login cancel` abort. Other `!mcp` subcommands stay passthrough. A pending MCP login is dropped when its session is reset. An agent that does not know `mcp:*` methods (unknown auth method / method not found) gets the old passthrough.
+- `command.SessionAuthenticator` and `command.SessionLocator`: optional capabilities that enable `!mcp login`. `*client.AgentProc` and the `convo` Controller implement them.
+- `client.AgentProc.AuthenticateSession`: authenticate within an ACP session. `client.IsUnknownAuthMethod` spots an agent that refused the method id.
+
 ## [0.39.0] - 2026-11-03
 
 ### Added

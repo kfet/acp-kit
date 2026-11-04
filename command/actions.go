@@ -18,6 +18,7 @@
 package command
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -304,7 +305,27 @@ func (b *Broker) NewSession(convID string) error {
 	if b.ctrl == nil {
 		return ErrNoController
 	}
-	return b.ctrl.ResetSession(convID)
+	if err := b.ctrl.ResetSession(convID); err != nil {
+		return err
+	}
+	b.dropSessionLogin(convID)
+	return nil
+}
+
+// dropSessionLogin abandons a pending `!mcp login` once its session is
+// gone: the next message would otherwise be swallowed as a paste for a
+// session that no longer exists. The agent is told to cancel, best
+// effort. A provider login is not tied to a session and survives.
+func (b *Broker) dropSessionLogin(convID string) {
+	b.mu.Lock()
+	e, ok := b.pending[convID]
+	if ok && e.sessionID != "" {
+		delete(b.pending, convID)
+	}
+	b.mu.Unlock()
+	if ok && e.sessionID != "" {
+		_, _ = b.authenticate(context.Background(), e, "", true)
+	}
 }
 
 // Post sends a message into the conversation out of band. See Poster

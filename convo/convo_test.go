@@ -504,3 +504,28 @@ func TestSupersededWhileWaitingSkipsRun(t *testing.T) {
 	}
 	_ = m.WaitIdle(ctx)
 }
+
+func TestControllerACPSessionID(t *testing.T) {
+	m := newM(t, Config{Agent: &fakeAgent{}, Sessions: &fakeSessions{live: map[string]acp.SessionId{"c": "s1"}},
+		Hooks: Hooks{Resolve: func(tok string) (string, bool) { return tok, tok != "missing" }}})
+	for _, ctl := range []command.Controller{m.Controller(), newM(t, Config{Agent: &fakeAgent{}, NoStop: true,
+		Sessions: &fakeSessions{live: map[string]acp.SessionId{"c": "s1"}}}).Controller()} {
+		loc, ok := ctl.(command.SessionLocator)
+		if !ok {
+			t.Fatal("controller must be a SessionLocator")
+		}
+		if sid, ok := loc.ACPSessionID("c"); !ok || sid != "s1" {
+			t.Fatalf("live = %q %v", sid, ok)
+		}
+		if _, ok := loc.ACPSessionID("other"); ok {
+			t.Fatal("no session expected")
+		}
+	}
+	if _, ok := m.Controller().(command.SessionLocator).ACPSessionID("missing"); ok {
+		t.Fatal("unresolved token")
+	}
+	none := newM(t, Config{Agent: &fakeAgent{}})
+	if _, ok := none.Controller().(command.SessionLocator).ACPSessionID("c"); ok {
+		t.Fatal("no Sessions configured")
+	}
+}
