@@ -8,6 +8,13 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `state.WriteMeta` / `state.ReadMetas`: opaque per-conversation metadata file (`convs/<key>/.conv.json`), so a relay can rebuild its index from the conversation dirs.
+
+### Fixed
+- Tests pass on macOS: resolve the `/var` temp symlink, keep unix socket paths short, do not need `/proc`.
+- `remotefs` Push: do not quote the local tar's "Write error" (bsdtar on a closed pipe) next to the ssh failure.
+
 ## [0.38.0] - 2026-10-29
 
 ### Added

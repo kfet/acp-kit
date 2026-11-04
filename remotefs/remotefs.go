@@ -340,10 +340,23 @@ func (s *SSH) opErr(ctx context.Context, bound time.Duration, op string, err err
 // words ("this does not look like a tar archive").
 func withLocal(remote, local string) string {
 	local = strings.TrimSpace(local)
-	if local == "" {
+	if local == "" || pipeSymptom(local) {
 		return remote
 	}
 	return strings.TrimSpace(remote) + " (local tar: " + local + ")"
+}
+
+// pipeSymptom reports whether the local tar's complaint is only that
+// its output pipe closed. That is what a dead ssh does to it (bsdtar on
+// macOS says "Write error"; GNU tar dies on SIGPIPE and says nothing),
+// so it names no cause of its own.
+func pipeSymptom(local string) bool {
+	for _, s := range []string{"Write error", "Broken pipe"} {
+		if strings.Contains(local, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // ShellQuote wraps s in single quotes for a POSIX remote login shell,

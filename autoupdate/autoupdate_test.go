@@ -77,7 +77,12 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	dir := t.TempDir()
+	// Resolved: on macOS t.TempDir is under the /var symlink, and the
+	// manager resolves AgentBin.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	e := &env{t: t, dir: dir, bin: filepath.Join(dir, "relay"), agent: filepath.Join(dir, "fir"),
 		surf: &fakeSurface{}, now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.Local), target: "v1.1.0"}
 	write(t, e.bin, "old-relay")

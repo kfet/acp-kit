@@ -672,3 +672,16 @@ func TestFetchLocalTarStartFailsWithLargeSource(t *testing.T) {
 		t.Fatal("Fetch blocked: the start-failure branch held the pipe open")
 	}
 }
+
+func TestWithLocalDropsPipeSymptom(t *testing.T) {
+	for local, want := range map[string]string{
+		"tar: Write error":        "boom",
+		"tar: write: Broken pipe": "boom",
+		"":                        "boom",
+		"tar: no such file":       "boom (local tar: tar: no such file)",
+	} {
+		if got := withLocal("boom", local); got != want {
+			t.Errorf("withLocal(%q) = %q, want %q", local, got, want)
+		}
+	}
+}

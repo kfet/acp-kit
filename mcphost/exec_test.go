@@ -34,7 +34,7 @@ import (
 func TestSurvivesHostRestart(t *testing.T) {
 	shortenRedirBackoff(t)
 
-	dir := filepath.Join(t.TempDir(), "mcp") // stable path, created by New
+	dir := filepath.Join(shortTempDir(t), "mcp") // stable path, created by New
 	rt1, rt2 := &recordTool{}, &recordTool{}
 
 	h1 := hostAt(t, dir, rt1)

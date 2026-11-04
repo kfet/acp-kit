@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -23,9 +24,21 @@ type harness struct {
 	post                func(string) error
 }
 
+// realTempDir is t.TempDir with symlinks resolved. On macOS the temp
+// dir is under /var, a symlink to /private/var, and New resolves
+// AgentBin, so an unresolved path no longer matches what New stores.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 func newHarness(t *testing.T, mut func(*Config)) *harness {
 	t.Helper()
-	h := &harness{dir: t.TempDir()}
+	h := &harness{dir: realTempDir(t)}
 	h.bin = filepath.Join(h.dir, "fir")
 	if err := os.WriteFile(h.bin, []byte("v1"), 0o755); err != nil {
 		t.Fatal(err)
@@ -343,7 +356,8 @@ func TestDefaultsAndHelpers(t *testing.T) {
 	if c.AgentName != "fir" || c.RelayLockKey != "poe_acp" || c.AgentLockKey != "fir" || c.DrainTimeout != 30*time.Second || c.RelayBin == "" {
 		t.Fatalf("%+v", c)
 	}
-	if c.ProcExe(os.Getpid()) == "" || c.Now().IsZero() {
+	// /proc exists on Linux only; elsewhere the default reports "".
+	if exe := c.ProcExe(os.Getpid()); (runtime.GOOS == "linux" && exe == "") || c.Now().IsZero() {
 		t.Fatal("defaults")
 	}
 	if c.Reload == nil || !strings.Contains(HelpLine, "!update") {
@@ -443,7 +457,7 @@ func TestStaleMarker(t *testing.T) {
 }
 
 func TestAgentBinSymlinkResolved(t *testing.T) {
-	d := t.TempDir()
+	d := realTempDir(t)
 	real := filepath.Join(d, "fir-real")
 	os.WriteFile(real, nil, 0o755)
 	link := filepath.Join(d, "fir")

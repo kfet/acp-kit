@@ -16,7 +16,7 @@ import (
 // --- Config.Dir ---------------------------------------------------------
 
 func TestNew_StableDirIsCreatedAndTightened(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "nested", "mcp")
+	dir := filepath.Join(shortTempDir(t), "nested", "mcp")
 	h := hostAt(t, dir, &recordTool{})
 	if h.ownDir {
 		t.Error("a caller-supplied Dir is not ours to remove")
@@ -36,7 +36,7 @@ func TestNew_StableDirIsCreatedAndTightened(t *testing.T) {
 // A pre-existing group/other-readable directory is tightened, not
 // accepted as-is: a consumer's StateDir subtree is commonly 0755.
 func TestNew_StableDirPreExistingLoosePerms(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "loose")
+	dir := filepath.Join(shortTempDir(t), "loose")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestNew_StableDirPreExistingLoosePerms(t *testing.T) {
 }
 
 func TestNew_StableDirMkdirError(t *testing.T) {
-	f := filepath.Join(t.TempDir(), "afile")
+	f := filepath.Join(shortTempDir(t), "afile")
 	if err := os.WriteFile(f, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestNew_StableDirChmodError(t *testing.T) {
 	osChmod = func(string, os.FileMode) error { return errors.New("chmod boom") }
 	defer func() { osChmod = old }()
 	if _, err := New(Config{
-		Dir: filepath.Join(t.TempDir(), "d"), RedirSubcommand: "s", ServerName: "n",
+		Dir: filepath.Join(shortTempDir(t), "d"), RedirSubcommand: "s", ServerName: "n",
 		EnvSocket: "S", EnvToken: "T", RedirCommand: "/bin/true",
 	}); err == nil {
 		t.Fatal("want an error when the socket dir cannot be tightened")
@@ -75,7 +75,7 @@ func TestNew_StableDirChmodError(t *testing.T) {
 // Close must not delete a directory the caller owns — that would undo the
 // whole point of a stable path.
 func TestClose_KeepsCallerSuppliedDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "mcp")
+	dir := filepath.Join(shortTempDir(t), "mcp")
 	h := hostAt(t, dir, &recordTool{})
 	if err := h.Listen(); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestClose_KeepsCallerSuppliedDir(t *testing.T) {
 
 // CloseForExec leaves the socket path intact for the successor.
 func TestCloseForExec_KeepsSocketPath(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "mcp")
+	dir := filepath.Join(shortTempDir(t), "mcp")
 	h := hostAt(t, dir, &recordTool{})
 	if err := h.Listen(); err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestServe_RefusesConnectionsWhileClosing(t *testing.T) {
 // After a same-PID exec the socket file left behind was OURS, so removing
 // it is correct rather than racy. The same holds for a crashed process.
 func TestListen_RemovesStaleSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sock := filepath.Join(dir, "mcp.sock")
 	// A leftover socket file nobody is listening on.
 	ln, err := net.Listen("unix", sock)
@@ -184,7 +184,7 @@ func TestListen_RemovesStaleSocket(t *testing.T) {
 
 // A genuinely live holder must not be stolen from.
 func TestListen_RefusesLiveHolder(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	h1 := hostAt(t, dir, &recordTool{})
 	if err := h1.Listen(); err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestListen_RefusesLiveHolder(t *testing.T) {
 }
 
 func TestListen_StaleSocketRemoveError(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortTempDir(t)
 	sub := filepath.Join(dir, "mcp")
 	if err := os.Mkdir(sub, 0o700); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestRedir_ForwardCannotConnect(t *testing.T) {
 // the agent-side reader must stop rather than spin.
 func TestRedir_AgentLoopStopsWhenUndeliverable(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	fakeHost(t, sock, echoHost)
 	withDial(t, func(s string) (net.Conn, error) {
 		c, err := net.Dial("unix", s)

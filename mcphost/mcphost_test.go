@@ -148,7 +148,7 @@ func TestNew_MkdirError(t *testing.T) {
 }
 
 func TestNew_DefaultBaseDirXDG(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
 	h, err := New(Config{
 		RedirSubcommand: "sub", ServerName: "srv",
 		EnvSocket: "S", EnvToken: "T", RedirCommand: "/bin/true",

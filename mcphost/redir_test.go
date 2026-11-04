@@ -76,7 +76,7 @@ func TestRedir_DialError(t *testing.T) {
 // replay's response to the agent.
 func TestRedir_ReconnectReplaysInitialize(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 
 	type conn struct {
 		inits int
@@ -132,7 +132,7 @@ func TestRedir_ReconnectReplaysInitialize(t *testing.T) {
 // with silence.
 func TestRedir_InFlightRequestFailsCleanly(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 
 	block := make(chan struct{})
 	ln := fakeHost(t, sock, func(c net.Conn, br *bufio.Reader) {
@@ -179,7 +179,7 @@ func TestRedir_InFlightRequestFailsCleanly(t *testing.T) {
 // agent sees a dead server rather than hanging forever.
 func TestRedir_GivesUpAndExits(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	ln := fakeHost(t, sock, func(net.Conn, *bufio.Reader) {})
 
 	rd := newProxyHarness(t, sock, "tok")
@@ -200,7 +200,7 @@ func TestRedir_GivesUpAndExits(t *testing.T) {
 // not noticed the drop yet.
 func TestRedir_ForwardReconnects(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	ln := fakeHost(t, sock, echoHost)
 
 	rd := newProxyHarness(t, sock, "tok")
@@ -228,7 +228,7 @@ func TestRedir_ForwardReconnects(t *testing.T) {
 // initialize's response, is forwarded rather than dropped.
 func TestRedir_ReplayForwardsStrayLine(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	var round int
 	var mu sync.Mutex
 	ln := fakeHost(t, sock, func(c net.Conn, br *bufio.Reader) {
@@ -329,7 +329,7 @@ func TestHalfCloseWrite_Unsupported(t *testing.T) {
 
 func TestRedir_ReplayWriteError(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	ln := fakeHost(t, sock, echoHost)
 
 	var round int
@@ -368,7 +368,7 @@ func TestRedir_ReplayWriteError(t *testing.T) {
 
 func TestRedir_ReplayReadError(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	var round int
 	var mu sync.Mutex
 	ln := fakeHost(t, sock, func(c net.Conn, br *bufio.Reader) {
@@ -411,7 +411,7 @@ func TestRedir_ReplayReadError(t *testing.T) {
 
 func TestRedir_ReplayInitializedNoteWriteError(t *testing.T) {
 	shortenRedirBackoff(t)
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(shortTempDir(t), "mcp.sock")
 	ln := fakeHost(t, sock, echoHost)
 
 	var round int
