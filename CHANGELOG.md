@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-03
+
 ### Added
 - `state.WriteMeta` / `state.ReadMetas`: opaque per-conversation metadata file (`convs/<key>/.conv.json`), so a relay can rebuild its index from the conversation dirs.
 
