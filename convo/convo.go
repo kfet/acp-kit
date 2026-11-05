@@ -114,6 +114,13 @@ type In struct {
 	// stable token here and resolves it with Config.Resolve.
 	Token string
 	Text  string
+	// Sender is the relay's id for who sent the message; "" means
+	// unknown. The Manager does not interpret it: it hands it to
+	// Hooks.SessionKey while a command from this message runs, so a
+	// relay with one session per user (zulip-acp's session_scope
+	// "thread_user") gets `!status`, `!stop` and `!mcp login` on the
+	// sender's own session.
+	Sender string
 	// Sink overrides Config.Sink for this message (poe-acp: the
 	// request's SSE stream).
 	Sink Sink
@@ -193,6 +200,15 @@ type Hooks struct {
 	ModelChanged func(token, conv, modelID string)
 	// Decorate post-processes a broker reply before it is sent.
 	Decorate func(text, reply string) string
+	// SessionKey maps a resolved conversation and a command's sender
+	// (In.Sender; "" when unknown) to the key of the sender's session:
+	// the Sessions key `!status`, `!mcp login` and the session's model
+	// look up, and the Active key of the turn `!stop` stops and
+	// `!status` reports running. A relay with one session per user
+	// returns the sender's own key. Default: conv, one session per
+	// conversation. The default `!new` still resets conv; a per-user
+	// relay supplies Reset.
+	SessionKey func(conv, sender string) string
 }
 
 // ErrNoConversation is returned by SetModelOverride for a token that
@@ -391,6 +407,9 @@ func (m *Manager) classify(ctx context.Context, in *In) bool {
 // not take the message after all — a pending login that ended between
 // HasPending and Handle — so the caller forwards it as a normal prompt.
 func (m *Manager) command(ctx context.Context, in *In) bool {
+	if in.Sender != "" {
+		ctx = context.WithValue(ctx, senderKey{}, in.Sender)
+	}
 	out, err := m.broker.Handle(ctx, in.token(), in.Text)
 	if err != nil {
 		m.cfg.Logf("convo: command %q in %s: %v", in.Text, in.Conv, err)
@@ -450,23 +469,30 @@ func (m *Manager) ApplyModel(ctx context.Context, conv string, sid acp.SessionId
 // EffectiveModel is conv's override, else the model conv's live
 // session reports (see ModelReporter), else the agent's current model.
 func (m *Manager) EffectiveModel(conv string) string {
+	return m.effectiveModel(conv, conv)
+}
+
+// effectiveModel is EffectiveModel reading the model of the session
+// at Sessions key key.
+func (m *Manager) effectiveModel(conv, key string) string {
 	if id, ok := m.ov.Get(conv); ok {
 		return id
 	}
-	if id := m.sessionModel(conv); id != "" {
+	if id := m.sessionModel(key); id != "" {
 		return id
 	}
 	_, cur := m.cfg.Agent.Models()
 	return cur
 }
 
-// sessionModel is the model conv's live session reports, or "".
-func (m *Manager) sessionModel(conv string) string {
+// sessionModel is the model the live session at Sessions key key
+// reports, or "".
+func (m *Manager) sessionModel(key string) string {
 	mr, ok := m.cfg.Agent.(ModelReporter)
 	if !ok || m.cfg.Sessions == nil {
 		return ""
 	}
-	sid, _, live := m.cfg.Sessions.Live(conv)
+	sid, _, live := m.cfg.Sessions.Live(key)
 	if !live {
 		return ""
 	}
@@ -488,6 +514,21 @@ func (m *Manager) Controller() command.Controller {
 type controller struct{ m *Manager }
 
 type stopController struct{ controller }
+
+// senderKey carries In.Sender on a command's context to the
+// controller's context-aware methods.
+type senderKey struct{}
+
+// sessionKey is the Sessions key of the session a command in ctx
+// acts on in conv: Hooks.SessionKey of conv and the command's sender,
+// else conv.
+func (c controller) sessionKey(ctx context.Context, conv string) string {
+	if c.m.cfg.Hooks.SessionKey == nil {
+		return conv
+	}
+	sender, _ := ctx.Value(senderKey{}).(string)
+	return c.m.cfg.Hooks.SessionKey(conv, sender)
+}
 
 func (c controller) resolve(token string) (string, bool) {
 	if c.m.cfg.Hooks.Resolve != nil {
@@ -542,19 +583,26 @@ func (c controller) ResetSession(token string) error {
 }
 
 func (c controller) StatusFor(token string) command.SessionStatus {
+	return c.StatusForContext(context.Background(), token)
+}
+
+// StatusForContext implements command.ContextStatusReporter: StatusFor
+// on the session of the command's sender (see Hooks.SessionKey).
+func (c controller) StatusForContext(ctx context.Context, token string) command.SessionStatus {
 	conv, ok := c.resolve(token)
 	models, cur := c.AvailableModels()
 	st := command.SessionStatus{EffectiveModel: cur, DefaultModel: cur, ModelsAvailable: len(models)}
 	if ok {
+		key := c.sessionKey(ctx, conv)
 		if id, has := c.m.ov.Get(conv); has {
 			st.OverrideModel, st.EffectiveModel = id, id
-		} else if id := c.m.sessionModel(conv); id != "" {
+		} else if id := c.m.sessionModel(key); id != "" {
 			st.EffectiveModel = id
 		}
 		// Only a relay that can stop a turn reports one running: the
 		// status line offers `!stop` for it.
-		st.TurnRunning = !c.m.cfg.NoStop && c.m.active.Running(conv)
-		c.addSession(&st, conv)
+		st.TurnRunning = !c.m.cfg.NoStop && c.m.active.Running(key)
+		c.addSession(&st, key)
 	}
 	if c.m.cfg.Hooks.Status != nil {
 		st = c.m.cfg.Hooks.Status(token, conv, ok, st)
@@ -562,11 +610,12 @@ func (c controller) StatusFor(token string) command.SessionStatus {
 	return st
 }
 
-func (c controller) addSession(st *command.SessionStatus, conv string) {
+// addSession fills st from the live session at Sessions key key.
+func (c controller) addSession(st *command.SessionStatus, key string) {
 	if c.m.cfg.Sessions == nil {
 		return
 	}
-	sid, last, live := c.m.cfg.Sessions.Live(conv)
+	sid, last, live := c.m.cfg.Sessions.Live(key)
 	if !live {
 		return
 	}
@@ -590,6 +639,12 @@ func (c controller) addSession(st *command.SessionStatus, conv string) {
 }
 
 func (c controller) RelayInfo(token string) command.RelayInfo {
+	return c.RelayInfoContext(context.Background(), token)
+}
+
+// RelayInfoContext implements command.ContextStatusReporter: RelayInfo
+// with the session of the command's sender (see Hooks.SessionKey).
+func (c controller) RelayInfoContext(ctx context.Context, token string) command.RelayInfo {
 	conv, ok := c.resolve(token)
 	models, _ := c.AvailableModels()
 	ri := command.RelayInfo{
@@ -604,16 +659,17 @@ func (c controller) RelayInfo(token string) command.RelayInfo {
 	if !c.m.cfg.StartTime.IsZero() {
 		ri.Uptime = c.m.cfg.Now().Sub(c.m.cfg.StartTime).Round(time.Second).String()
 	}
-	if s := c.m.cfg.Sessions; s != nil {
-		ri.ActiveSessions = s.Len()
-		if ok {
-			if sid, _, live := s.Live(conv); live {
+	if ok {
+		key := c.sessionKey(ctx, conv)
+		ri.EffectiveModel = c.m.effectiveModel(conv, key)
+		if s := c.m.cfg.Sessions; s != nil {
+			if sid, _, live := s.Live(key); live {
 				ri.SessionID = string(sid)
 			}
 		}
 	}
-	if ok {
-		ri.EffectiveModel = c.m.EffectiveModel(conv)
+	if s := c.m.cfg.Sessions; s != nil {
+		ri.ActiveSessions = s.Len()
 	}
 	if c.m.cfg.Hooks.RelayInfo != nil {
 		ri = c.m.cfg.Hooks.RelayInfo(token, conv, ok, ri)
@@ -624,21 +680,34 @@ func (c controller) RelayInfo(token string) command.RelayInfo {
 // ACPSessionID implements command.SessionLocator: the conversation's
 // live ACP session, never creating one.
 func (c controller) ACPSessionID(token string) (string, bool) {
+	return c.ACPSessionIDContext(context.Background(), token)
+}
+
+// ACPSessionIDContext implements command.ContextSessionLocator:
+// ACPSessionID for the session of the command's sender (see
+// Hooks.SessionKey).
+func (c controller) ACPSessionIDContext(ctx context.Context, token string) (string, bool) {
 	conv, ok := c.resolve(token)
 	if !ok || c.m.cfg.Sessions == nil {
 		return "", false
 	}
-	sid, _, live := c.m.cfg.Sessions.Live(conv)
+	sid, _, live := c.m.cfg.Sessions.Live(c.sessionKey(ctx, conv))
 	return string(sid), live
 }
 
 // StopTurn implements command.TurnStopper.
 func (c stopController) StopTurn(token string) bool {
+	return c.StopTurnContext(context.Background(), token)
+}
+
+// StopTurnContext implements command.ContextTurnStopper: StopTurn on
+// the turn of the command's sender (see Hooks.SessionKey).
+func (c stopController) StopTurnContext(ctx context.Context, token string) bool {
 	conv, ok := c.resolve(token)
 	if !ok {
 		return false
 	}
-	return c.m.active.Stop(context.Background(), conv)
+	return c.m.active.Stop(context.Background(), c.sessionKey(ctx, conv))
 }
 
 // noAuth is the Authenticator of an agent that cannot log in: `!login`

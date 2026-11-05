@@ -977,7 +977,7 @@ func TestStop(t *testing.T) {
 
 	// Unreachable via Handle, but the guard is real: a Broker with no
 	// Controller at all.
-	if got := New(newFake()).stop("c"); !strings.Contains(got.Text, "unavailable") {
+	if got := New(newFake()).stop(context.Background(), "c"); !strings.Contains(got.Text, "unavailable") {
 		t.Fatalf("stop without a controller: %q", got.Text)
 	}
 }

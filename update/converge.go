@@ -74,8 +74,11 @@ func (u *Updater) converge(ctx context.Context, req Request, op Op) (res Result,
 		return Result{Text: log.String() + "❌ Could not write the update marker: " + err.Error() + ". Nothing was run."}, false
 	}
 	// The subshell keeps an `exit` inside the command from skipping the
-	// rc write.
-	script := "echo $$ > " + strconv.Quote(pidPath) + "\n(\n" + u.cfg.ConvergeCmd + "\n)\necho $? > " + strconv.Quote(rcPath) + "\n"
+	// rc write. The rc file is renamed into place: watch takes its
+	// existence as "finished", and a file written in place can be seen
+	// empty.
+	rcTmp := strconv.Quote(rcPath + ".tmp")
+	script := "echo $$ > " + strconv.Quote(pidPath) + "\n(\n" + u.cfg.ConvergeCmd + "\n)\necho $? > " + rcTmp + "\nmv " + rcTmp + " " + strconv.Quote(rcPath) + "\n"
 	argv := append(append([]string{}, u.cfg.ConvergeWrap...), "sh", "-c", script)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = lf, lf

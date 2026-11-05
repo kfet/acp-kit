@@ -100,6 +100,18 @@ type Controller interface {
 	RelayInfo(convID string) RelayInfo
 }
 
+// ContextStatusReporter is the OPTIONAL Controller refinement behind
+// `!status` that sees the command's context. A relay can carry the
+// sender there, so the status can show the sender's own session when a
+// conversation has one session per user (zulip-acp's session_scope
+// "thread_user"). When the Controller implements it, the broker calls
+// it in place of StatusFor and RelayInfo. acp-kit/convo's Controller
+// implements it.
+type ContextStatusReporter interface {
+	StatusForContext(ctx context.Context, convID string) SessionStatus
+	RelayInfoContext(ctx context.Context, convID string) RelayInfo
+}
+
 // TurnStopper is the OPTIONAL capability behind `!stop`. A Controller
 // that implements it enables the command; one that does not leaves
 // `!stop` unrecognised, so the text forwards to the agent as ordinary
@@ -116,6 +128,16 @@ type Controller interface {
 // can tell interrupting from doing nothing.
 type TurnStopper interface {
 	StopTurn(convID string) bool
+}
+
+// ContextTurnStopper is the OPTIONAL TurnStopper refinement that sees
+// the command's context, so `!stop` can stop the sender's own turn when
+// a conversation has one session per user. It only takes effect on a
+// Controller that is also a TurnStopper (which enables `!stop`); the
+// broker then calls it in place of StopTurn.
+// acp-kit/convo's Controller implements it.
+type ContextTurnStopper interface {
+	StopTurnContext(ctx context.Context, convID string) bool
 }
 
 // stopper returns the Controller's TurnStopper capability, if it has
@@ -537,9 +559,9 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 		return b.start(ctx, convID, rest)
 	case body == "relay" || body == "bot":
 		// Undocumented aliases: !relay folded into !status.
-		return b.status(convID), nil
+		return b.status(ctx, convID), nil
 	case body == "status" || body == "whoami":
-		return b.status(convID), nil
+		return b.status(ctx, convID), nil
 	case body == "models" || strings.HasPrefix(body, "models "):
 		// Undocumented alias: !models folded into !model.
 		return b.models(strings.TrimSpace(strings.TrimPrefix(body, "models"))), nil
@@ -553,7 +575,7 @@ func (b *Broker) Handle(ctx context.Context, convID, text string) (*Outcome, err
 	case strings.HasPrefix(body, "unschedule"):
 		return b.unschedule(convID, strings.TrimSpace(strings.TrimPrefix(body, "unschedule"))), nil
 	case body == "stop":
-		return b.stop(convID), nil
+		return b.stop(ctx, convID), nil
 	default:
 		// Sigil-prefixed but not a login command — not ours.
 		return nil, nil
@@ -615,8 +637,8 @@ func (b *Broker) help() *Outcome {
 // command in this file is this thin: the implementation lives in
 // actions.go so the MCP front end (acp-kit/relaytool) runs the same
 // code, and the only thing that differs is how the answer is delivered.
-func (b *Broker) status(convID string) *Outcome {
-	return textOr(b.Status(convID))
+func (b *Broker) status(ctx context.Context, convID string) *Outcome {
+	return textOr(b.StatusContext(ctx, convID))
 }
 
 // modelsListCap bounds how many models a model listing prints in one
@@ -717,12 +739,18 @@ func (b *Broker) unschedule(convID, id string) *Outcome {
 // Unreachable unless the Controller implements TurnStopper, because
 // IsCommand refuses to classify `!stop` as a command otherwise and
 // Handle is only reached for recognised commands.
-func (b *Broker) stop(convID string) *Outcome {
+func (b *Broker) stop(ctx context.Context, convID string) *Outcome {
 	ts, ok := b.stopper()
 	if !ok {
 		return &Outcome{Text: "Session control is unavailable."}
 	}
-	if !ts.StopTurn(convID) {
+	var stopped bool
+	if cs, ok := ts.(ContextTurnStopper); ok {
+		stopped = cs.StopTurnContext(ctx, convID)
+	} else {
+		stopped = ts.StopTurn(convID)
+	}
+	if !stopped {
 		return &Outcome{Text: "Nothing is running here."}
 	}
 	return &Outcome{Text: "🛑 Interrupted."}

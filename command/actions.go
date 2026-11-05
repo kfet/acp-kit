@@ -147,11 +147,22 @@ func (b *Broker) CanSchedule() bool { _, ok := b.scheduler(); return ok }
 // facts, and a second "structured" rendering would be a second thing to
 // keep in step.
 func (b *Broker) Status(convID string) (string, error) {
+	return b.StatusContext(context.Background(), convID)
+}
+
+// StatusContext is Status with the caller's context, handed to a
+// Controller that implements ContextStatusReporter.
+func (b *Broker) StatusContext(ctx context.Context, convID string) (string, error) {
 	if b.ctrl == nil {
 		return "", ErrNoController
 	}
-	st := b.ctrl.StatusFor(convID)
-	ri := b.ctrl.RelayInfo(convID)
+	var st SessionStatus
+	var ri RelayInfo
+	if cs, ok := b.ctrl.(ContextStatusReporter); ok {
+		st, ri = cs.StatusForContext(ctx, convID), cs.RelayInfoContext(ctx, convID)
+	} else {
+		st, ri = b.ctrl.StatusFor(convID), b.ctrl.RelayInfo(convID)
+	}
 	var sb strings.Builder
 	sb.WriteString("**Status**\n\n")
 	if st.Where != "" {

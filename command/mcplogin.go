@@ -50,6 +50,26 @@ type SessionLocator interface {
 	ACPSessionID(convID string) (sessionID string, ok bool)
 }
 
+// ContextSessionLocator is the OPTIONAL SessionLocator refinement that
+// sees the command's context. A relay can carry the sender there, so
+// the lookup can find the sender's own session when a conversation has
+// one session per user (zulip-acp's session_scope "thread_user").
+// It only takes effect on a Controller that is also a SessionLocator
+// (which enables `!mcp login`); the broker then calls it in place of
+// ACPSessionID. acp-kit/convo's Controller implements it.
+type ContextSessionLocator interface {
+	ACPSessionIDContext(ctx context.Context, convID string) (sessionID string, ok bool)
+}
+
+// acpSessionID asks loc for convID's live session, through
+// ContextSessionLocator when loc implements it.
+func acpSessionID(ctx context.Context, loc SessionLocator, convID string) (string, bool) {
+	if cl, ok := loc.(ContextSessionLocator); ok {
+		return cl.ACPSessionIDContext(ctx, convID)
+	}
+	return loc.ACPSessionID(convID)
+}
+
 // MCPMethodPrefix prefixes an MCP server name to form its authenticate
 // methodId ("mcp:github"). Such ids are dynamic: the agent never lists
 // them in initialize, and the broker never checks them against
@@ -123,7 +143,7 @@ func (b *Broker) startMCP(ctx context.Context, convID, server string) (*Outcome,
 	b.mu.Unlock()
 
 	loc, _ := b.locator()
-	sid, ok := loc.ACPSessionID(convID)
+	sid, ok := acpSessionID(ctx, loc, convID)
 	if !ok || sid == "" {
 		return &Outcome{Text: fmt.Sprintf("There is no agent session in this conversation yet, and MCP servers are connected per session. Send any message first so one starts, then send `%smcp login %s` again.", DisplaySigil, server)}, nil
 	}

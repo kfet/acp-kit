@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `convo`: `In.Sender` and `Hooks.SessionKey(conv, sender)`. A relay with one session per user (zulip-acp `session_scope: "thread_user"`) sets both, and `!status`, `!stop` and `!mcp login` then use the sender's own session and turn. Unset, nothing changes: one session per conversation. The context-free Controller methods (`StatusFor`, `RelayInfo`, `ACPSessionID`, `StopTurn`, as relaytool and a relay's own panel call them) know no sender and still use the conversation's key.
+- `command.ContextStatusReporter` (`StatusForContext`, `RelayInfoContext`), `command.ContextSessionLocator` (`ACPSessionIDContext`) and `command.ContextTurnStopper` (`StopTurnContext`): optional Controller refinements. They get the command's context. The broker prefers them when present. `Broker.StatusContext` is `Status` with a context. The `convo` Controller implements all three.
+
+### Fixed
+- `convo`: with per-user sessions, `!mcp login` no longer says "send a message first" while the sender has a live session, `!status` shows the sender's session, model, stats and running turn instead of none, and `!stop` stops the sender's turn instead of nothing. The lookups used the bare conversation id.
+- `update`: a converge job's rc file is renamed into place, so the watcher can no longer read it empty and report "Converge failed (exit )" for a job that succeeded.
+
 ## [0.40.0] - 2026-11-04
 
 ### Added
