@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-11-07
+
 ### Added
 - `schedule.Store.Rekey(from, to)`: moves every item armed for one conversation token to another, and persists the move. Fires that run in the old conversation move too, so the depth guard still applies after the move. A relay whose token can change (zulip-acp: a topic rename) calls it, or the items fire into a conversation that is gone and are dropped.
 - `relaytool.Tools.Rekey(from, to)`: moves a deferred `new_session` to the new token, so a turn that calls `new_session` and renames its topic still gets the fresh session.
