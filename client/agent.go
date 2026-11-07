@@ -82,12 +82,24 @@ type Caps struct {
 	// Audio reflects agentCapabilities.promptCapabilities.audio, the
 	// same deal as Image for ContentBlock::Audio.
 	Audio bool
-	// SystemPrompt reflects agentCapabilities._meta["session.systemPrompt"].
-	// When true the consumer may pass a system-prompt block list via
-	// session/new._meta and the agent will treat it as durable across
-	// compaction. When false the consumer must fall back to inlining the
-	// same content on first prompt (and re-arm on resume).
+	// SystemPrompt is true when the agent accepts a client system prompt
+	// by either path: the stable ACP capability
+	// agentCapabilities.sessionCapabilities.systemPrompt, or the
+	// deprecated acp-kit extension agentCapabilities._meta
+	// ["session.systemPrompt"]. When true the consumer passes the prompt
+	// as blocks to NewSession (and ResumeSessionWithSystemPrompt) and the
+	// kit picks the wire form; SystemPromptVia says which. When false the
+	// consumer must fall back to inlining the same content on first
+	// prompt (and re-arm on resume).
 	SystemPrompt bool
+	// SystemPromptVia names the path SystemPrompt was detected by. The
+	// stable capability wins when an agent advertises both.
+	SystemPromptVia SystemPromptVia
+	// SystemPromptOverride reflects
+	// sessionCapabilities.systemPrompt.mode.override: the agent would let
+	// a client prompt replace its default instructions. acp-kit itself
+	// always sends mode "append".
+	SystemPromptOverride bool
 	// Extensions captures arbitrary entries from agentCapabilities._meta
 	// other than the kit-owned "session.systemPrompt". Consumers can
 	// probe for custom extension ids (e.g. "dev.acp-kit.status-line/v1")
@@ -126,6 +138,8 @@ type resumeSessionRequest struct {
 	Cwd        string          `json:"cwd,omitempty"`
 	McpServers []acp.McpServer `json:"mcpServers,omitempty"`
 	Meta       map[string]any  `json:"_meta,omitempty"`
+	// SystemPrompt: SDK shim field, see sysprompt_sdkshim.go.
+	SystemPrompt *systemPromptParam `json:"systemPrompt,omitempty"`
 }
 
 // Config configures an AgentProc.
@@ -372,12 +386,20 @@ func parseCaps(raw json.RawMessage) Caps {
 	}
 	_ = json.Unmarshal(raw, &env)
 	fork := env.AgentCapabilities.SessionCapabilities.Fork
-	_, sysPrompt := env.AgentCapabilities.Meta["session.systemPrompt"]
+	stable, override := parseSystemPromptCap(raw)
+	_, legacy := env.AgentCapabilities.Meta[legacySystemPromptKey]
+	via := SystemPromptNone
+	switch {
+	case stable:
+		via = SystemPromptStable
+	case legacy:
+		via = SystemPromptLegacyMeta
+	}
 	var exts map[string]json.RawMessage
 	if len(env.AgentCapabilities.Meta) > 0 {
 		exts = make(map[string]json.RawMessage, len(env.AgentCapabilities.Meta))
 		for k, v := range env.AgentCapabilities.Meta {
-			if k == "session.systemPrompt" {
+			if k == legacySystemPromptKey {
 				continue
 			}
 			exts[k] = v
@@ -387,17 +409,19 @@ func parseCaps(raw json.RawMessage) Caps {
 		}
 	}
 	return Caps{
-		LoadSession:     env.AgentCapabilities.LoadSession,
-		ListSessions:    env.AgentCapabilities.SessionCapabilities.List != nil,
-		ResumeSession:   env.AgentCapabilities.SessionCapabilities.Resume != nil,
-		ForkSession:     fork != nil,
-		ForkAt:          fork != nil && fork.Meta["at"] != nil,
-		EmbeddedContext: env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
-		Image:           env.AgentCapabilities.PromptCapabilities.Image,
-		Audio:           env.AgentCapabilities.PromptCapabilities.Audio,
-		SystemPrompt:    sysPrompt,
-		Extensions:      exts,
-		Notices:         parseNoticeCap(exts),
+		LoadSession:          env.AgentCapabilities.LoadSession,
+		ListSessions:         env.AgentCapabilities.SessionCapabilities.List != nil,
+		ResumeSession:        env.AgentCapabilities.SessionCapabilities.Resume != nil,
+		ForkSession:          fork != nil,
+		ForkAt:               fork != nil && fork.Meta["at"] != nil,
+		EmbeddedContext:      env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+		Image:                env.AgentCapabilities.PromptCapabilities.Image,
+		Audio:                env.AgentCapabilities.PromptCapabilities.Audio,
+		SystemPrompt:         via != SystemPromptNone,
+		SystemPromptVia:      via,
+		SystemPromptOverride: override,
+		Extensions:           exts,
+		Notices:              parseNoticeCap(exts),
 	}
 }
 
@@ -412,11 +436,14 @@ func (a *AgentProc) Caps() Caps {
 // NewSession creates a new ACP session and wires the given sink to receive
 // its updates. Returns the ACP session id.
 //
-// systemPromptBlocks, when non-nil, is sent in the request's _meta under
-// "session.systemPrompt".blocks. Callers should only pass it when
-// Caps().SystemPrompt is true; agents that haven't advertised the cap
-// will simply ignore the unknown _meta key, but skipping it keeps the
-// wire clean.
+// systemPromptBlocks, when non-nil, is the session's system prompt. With
+// the stable ACP capability (Caps().SystemPromptVia == SystemPromptStable)
+// it is sent as params.systemPrompt {mode: "append", content: blocks} and
+// re-sent whenever the kit re-establishes the session (resume, load, fork,
+// respawn recovery). Otherwise it goes in the deprecated
+// _meta["session.systemPrompt"].blocks, as before the stable capability.
+// Callers should only pass it when Caps().SystemPrompt is true, and only
+// text blocks: the stable spec forbids other block types for now.
 func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) (acp.SessionId, error) {
 	return a.NewSessionWithMeta(ctx, cwd, sink, systemPromptBlocks, nil)
 }
@@ -426,37 +453,38 @@ func (a *AgentProc) NewSession(ctx context.Context, cwd string, sink SessionUpda
 // routing hints an agent understands (e.g. a `host` entry telling a
 // tmux-multiplexing agent which SSH host to run the session's pane on).
 //
-// extraMeta is merged into the request's `_meta`; the reserved
-// "session.systemPrompt" key is owned by systemPromptBlocks and overwrites
-// any same-named entry. An empty/nil extraMeta with nil systemPromptBlocks
-// leaves `_meta` absent from the wire entirely, exactly as NewSession does.
+// extraMeta is merged into the request's `_meta`. On the deprecated
+// legacy path the reserved "session.systemPrompt" key is owned by
+// systemPromptBlocks and overwrites any same-named entry. An empty/nil
+// extraMeta with no legacy system prompt leaves `_meta` absent from the
+// wire entirely, exactly as NewSession does.
 func (a *AgentProc) NewSessionWithMeta(ctx context.Context, cwd string, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock, extraMeta map[string]any) (acp.SessionId, error) {
-	req := acp.NewSessionRequest{
-		Cwd:        cwd,
-		McpServers: a.cfg.mcpFor(cwd),
-	}
-	if len(extraMeta) > 0 || systemPromptBlocks != nil {
-		meta := make(map[string]any, len(extraMeta)+1)
+	var base map[string]any
+	if len(extraMeta) > 0 {
+		base = make(map[string]any, len(extraMeta))
 		for k, v := range extraMeta {
-			meta[k] = v
+			base[k] = v
 		}
-		if systemPromptBlocks != nil {
-			meta["session.systemPrompt"] = map[string]any{
-				"blocks": systemPromptBlocks,
-			}
-		}
-		req.Meta = meta
 	}
-	req.Meta = withOrigin(ctx, req.Meta)
+	base = withOrigin(ctx, base)
 	g, err := a.live(ctx)
 	if err != nil {
 		return "", err
+	}
+	caps := a.Caps()
+	req := newSessionRequest{
+		NewSessionRequest: acp.NewSessionRequest{
+			Cwd:        cwd,
+			McpServers: a.cfg.mcpFor(cwd),
+			Meta:       withLegacySystemPrompt(caps, base, systemPromptBlocks),
+		},
+		SystemPrompt: stableSystemPrompt(caps, systemPromptBlocks),
 	}
 	resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionNew, req)
 	if err != nil {
 		return "", err
 	}
-	a.track(resp.SessionId, cwd, req.Meta, g)
+	a.track(resp.SessionId, cwd, base, systemPromptBlocks, g)
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
 	a.noteConfig(resp.SessionId, resp.ConfigOptions)
@@ -682,21 +710,33 @@ func (a *AgentProc) ListSessions(ctx context.Context, cwd string) ([]SessionInfo
 // ResumeSession calls the unstable session/resume and registers the sink
 // for the resumed session. Caller must check Caps().ResumeSession first.
 // The given sid is the agent-returned identifier (as listed by ListSessions).
+// It sends no system prompt; see ResumeSessionWithSystemPrompt.
 func (a *AgentProc) ResumeSession(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink) error {
+	return a.ResumeSessionWithSystemPrompt(ctx, cwd, sid, sink, nil)
+}
+
+// ResumeSessionWithSystemPrompt is ResumeSession that also carries the
+// session's system prompt. With the stable ACP capability the blocks are
+// re-sent as params.systemPrompt, as the spec asks clients to do on every
+// lifecycle request. On the deprecated legacy path nothing extra goes on
+// the wire (that extension only covered session/new). Either way the
+// blocks are remembered for respawn recovery.
+func (a *AgentProc) ResumeSessionWithSystemPrompt(ctx context.Context, cwd string, sid acp.SessionId, sink SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) error {
 	g, err := a.live(ctx)
 	if err != nil {
 		return err
 	}
 	resp, err := rpc[sessionResponse](ctx, g, "session/resume", resumeSessionRequest{
-		SessionId:  string(sid),
-		Cwd:        cwd,
-		McpServers: a.cfg.mcpFor(cwd),
-		Meta:       withOrigin(ctx, nil),
+		SessionId:    string(sid),
+		Cwd:          cwd,
+		McpServers:   a.cfg.mcpFor(cwd),
+		Meta:         withOrigin(ctx, nil),
+		SystemPrompt: stableSystemPrompt(a.Caps(), systemPromptBlocks),
 	})
 	if err != nil {
 		return err
 	}
-	a.track(sid, cwd, withOrigin(ctx, nil), g)
+	a.track(sid, cwd, withOrigin(ctx, nil), systemPromptBlocks, g)
 	a.mu.Lock()
 	a.sinks[sid] = sink
 	a.noteConfig(sid, resp.ConfigOptions)
@@ -715,6 +755,8 @@ type forkSessionRequest struct {
 	Cwd        string          `json:"cwd"`
 	McpServers []acp.McpServer `json:"mcpServers"`
 	Meta       map[string]any  `json:"_meta,omitempty"`
+	// SystemPrompt: SDK shim field, see sysprompt_sdkshim.go.
+	SystemPrompt *systemPromptParam `json:"systemPrompt,omitempty"`
 }
 
 // ForkSession calls the unstable session/fork on parent and registers sink
@@ -722,8 +764,10 @@ type forkSessionRequest struct {
 // same update routing, and after an agent respawn the child is recovered
 // by resuming it. at, when non-empty, is sent as `_meta.at` and names the
 // entry to fork at; empty lets the agent choose (fir: the parent's latest
-// entry with no tool call left unfinished). Returns ErrForkUnsupported
-// (wrapped) when the agent does not advertise the needed capability.
+// entry with no tool call left unfinished). The parent's system prompt, if
+// the kit knows one, is re-sent with the stable capability and inherited
+// by the child. Returns ErrForkUnsupported (wrapped) when the agent does
+// not advertise the needed capability.
 func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.SessionId, at string, sink SessionUpdateSink) (acp.SessionId, error) {
 	caps := a.Caps()
 	if !caps.ForkSession {
@@ -736,7 +780,8 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 	if err != nil {
 		return "", err
 	}
-	req := forkSessionRequest{SessionId: string(wire), Cwd: cwd, McpServers: a.cfg.mcpFor(cwd)}
+	sys := a.systemPromptOf(parent)
+	req := forkSessionRequest{SessionId: string(wire), Cwd: cwd, McpServers: a.cfg.mcpFor(cwd), SystemPrompt: stableSystemPrompt(caps, sys)}
 	if at != "" {
 		req.Meta = map[string]any{"at": at}
 	}
@@ -748,7 +793,7 @@ func (a *AgentProc) ForkSession(ctx context.Context, cwd string, parent acp.Sess
 	if resp.SessionId == "" {
 		return "", errors.New("acp agent: session/fork returned no sessionId")
 	}
-	a.track(resp.SessionId, cwd, withOrigin(ctx, nil), g)
+	a.track(resp.SessionId, cwd, withOrigin(ctx, nil), sys, g)
 	a.mu.Lock()
 	a.sinks[resp.SessionId] = sink
 	a.noteConfig(resp.SessionId, resp.ConfigOptions)

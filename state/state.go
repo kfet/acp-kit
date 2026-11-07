@@ -28,6 +28,16 @@ type Agent interface {
 	RebindSink(sid acp.SessionId, sink client.SessionUpdateSink)
 }
 
+// SystemPromptResumer is optionally implemented by an Agent to carry the
+// session's system prompt on session/resume. The stable ACP system-prompt
+// capability asks clients to re-send the prompt on every lifecycle
+// request; when the Agent implements this (as *client.AgentProc does),
+// Manager resumes through it. Agents that do not keep working through
+// plain ResumeSession.
+type SystemPromptResumer interface {
+	ResumeSessionWithSystemPrompt(ctx context.Context, cwd string, sid acp.SessionId, sink client.SessionUpdateSink, systemPromptBlocks []acp.ContentBlock) error
+}
+
 // CwdFor returns and creates the stable cwd for key. A custom CwdFor is
 // responsible for its own path validation and mkdirs. The default stores each
 // key as one safe path component under <StateDir>/convs/<key>.
@@ -139,31 +149,33 @@ func (m *Manager) GetOrCreate(ctx context.Context, key string, sink client.Sessi
 	}
 
 	sys := m.systemPrompt(key)
+	caps := m.cfg.Agent.Caps()
+	// An agent with either system-prompt path (the stable ACP capability
+	// or the deprecated acp-kit _meta extension) gets the prompt as
+	// blocks; the client package picks the wire form. Only an agent with
+	// neither needs the inline fallback, on a new session and re-armed on
+	// resume alike: with the stable capability the prompt is re-sent on
+	// resume, and a legacy agent restores it itself.
+	var sysBlocks []acp.ContentBlock
+	pendingInline := false
+	if sys != "" {
+		if caps.SystemPrompt {
+			sysBlocks = []acp.ContentBlock{acp.TextBlock(sys)}
+		} else {
+			pendingInline = true
+		}
+	}
 	var sid acp.SessionId
 	resumed := false
 	if !fresh {
-		sid, resumed = m.tryResume(ctx, cwd, sink)
+		sid, resumed = m.tryResume(ctx, caps, cwd, sink, sysBlocks)
 	}
-	caps := m.cfg.Agent.Caps()
-	pendingInline := false
 	if !resumed {
-		var sysBlocks []acp.ContentBlock
-		if sys != "" {
-			if caps.SystemPrompt {
-				sysBlocks = []acp.ContentBlock{acp.TextBlock(sys)}
-			} else {
-				pendingInline = true
-			}
-		}
 		var nerr error
 		sid, nerr = m.cfg.Agent.NewSession(ctx, cwd, sink, sysBlocks)
 		if nerr != nil {
 			return nil, fmt.Errorf("new acp session: %w", nerr)
 		}
-	} else if sys != "" && !caps.SystemPrompt {
-		// Only non-cap agents need re-arming on resume. Cap-path agents are
-		// trusted to restore the durable system prompt themselves.
-		pendingInline = true
 	}
 
 	s := &Session{Key: key, SessionID: sid, Cwd: cwd, lastUsed: time.Now(), systemPrompt: sys, pendingSystemPromptInline: pendingInline}
@@ -399,8 +411,7 @@ func validateKeyComponent(s string) error {
 	return nil
 }
 
-func (m *Manager) tryResume(ctx context.Context, cwd string, sink client.SessionUpdateSink) (acp.SessionId, bool) {
-	caps := m.cfg.Agent.Caps()
+func (m *Manager) tryResume(ctx context.Context, caps client.Caps, cwd string, sink client.SessionUpdateSink, sysBlocks []acp.ContentBlock) (acp.SessionId, bool) {
 	if !caps.ListSessions || !caps.ResumeSession {
 		return "", false
 	}
@@ -413,7 +424,12 @@ func (m *Manager) tryResume(ctx context.Context, cwd string, sink client.Session
 		return "", false
 	}
 	sid := acp.SessionId(sessions[0].SessionId)
-	if err := m.cfg.Agent.ResumeSession(ctx, cwd, sid, sink); err != nil {
+	if r, ok := m.cfg.Agent.(SystemPromptResumer); ok && sysBlocks != nil {
+		err = r.ResumeSessionWithSystemPrompt(ctx, cwd, sid, sink, sysBlocks)
+	} else {
+		err = m.cfg.Agent.ResumeSession(ctx, cwd, sid, sink)
+	}
+	if err != nil {
 		kitlog.Debugf("state: resume %s in %s: %v", sid, cwd, err)
 		return "", false
 	}

@@ -92,9 +92,10 @@ turn and has nothing to speak on afterwards — and gets the read/steer subset.
 ## Contracts worth preserving
 
 - Idle GC drops only in-memory session bindings; it never removes conversation cwds.
-- `state` uses two system-prompt regimes:
-  - if the agent advertises `session.systemPrompt`, the prompt is sent via `session/new._meta`;
-  - otherwise it is exposed once through `TakePendingSystemPrompt`, and re-armed after resume.
+- `state` uses three system-prompt regimes, picked from `client.Caps().SystemPromptVia`:
+  - the stable ACP capability `agentCapabilities.sessionCapabilities.systemPrompt`: the prompt is sent as `params.systemPrompt` (`{mode: "append", content: [text]}`) on `session/new`, and re-sent on `session/resume`, `session/load`, `session/fork` and respawn recovery;
+  - the deprecated acp-kit extension `agentCapabilities._meta["session.systemPrompt"]` (kept for one release): the prompt is sent via `session/new._meta`;
+  - neither: it is exposed once through `TakePendingSystemPrompt`, and re-armed after resume.
 - `skills.LoadBuiltin` requires an app-specific prefix so different relays do not collide in `$TMPDIR`.
 - `attachments.Store` writes through `os.Root`; hostile filenames cannot escape the per-message directory.
 - `remotefs` exists because an agent command line is opaque and the ACP handshake never reports the agent's host: remoteness must be operator configuration. A remote agent that receives a nonexistent `cwd` does not fail — it falls back to `$HOME` — so provisioning failures must be surfaced loudly by the caller rather than fallen through.

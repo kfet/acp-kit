@@ -8,6 +8,14 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `client`: the stable ACP client-provided system prompt (ACP v1, stabilized 2026-11-06). An agent advertising `agentCapabilities.sessionCapabilities.systemPrompt` gets the prompt as `params.systemPrompt = {mode: "append", content: [...]}` on `session/new`, and the same object again on `session/resume`, `session/load`, `session/fork` and respawn recovery. It is never sent to an agent without the capability, nor with empty content. The SDK (acp-go-sdk v0.13.5) has no type for it; a shim in `client/sysprompt_sdkshim.go` covers it until it does.
+- `client.Caps.SystemPromptVia` (`SystemPromptStable`, `SystemPromptLegacyMeta`, `SystemPromptNone`) says which path the agent takes, and `Caps.SystemPromptOverride` reports `systemPrompt.mode.override`. `Caps.SystemPrompt` stays true for either path.
+- `client.AgentProc.ResumeSessionWithSystemPrompt`, and `state.SystemPromptResumer`: `state.Manager` resumes through it when the agent implements it, so the prompt is re-sent on resume.
+
+### Deprecated
+- The acp-kit `_meta["session.systemPrompt"]` system-prompt extension (`SystemPromptLegacyMeta`). It still works for agents that only advertise the old key, and the client still offers it at initialize. It will be removed in the next release.
+
 ## [0.41.0] - 2026-11-05
 
 ### Added

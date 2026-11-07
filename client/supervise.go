@@ -112,9 +112,12 @@ func (g *gen) hasProcess() bool { return g.cmd != nil && g.cmd.Process != nil }
 type sessRec struct {
 	mu   sync.Mutex
 	cwd  string
-	meta map[string]any // session/new _meta, reused by the new-session fallback
-	gen  uint64         // generation the session is live on
-	wire acp.SessionId  // id the current child knows it by
+	meta map[string]any // session/new _meta (no system prompt), reused by the new-session fallback
+	// sys is the session's system prompt blocks, re-sent on recovery in
+	// whatever form the (possibly upgraded) agent now advertises.
+	sys  []acp.ContentBlock
+	gen  uint64        // generation the session is live on
+	wire acp.SessionId // id the current child knows it by
 }
 
 // newProc builds an AgentProc with no child attached yet.
@@ -232,8 +235,11 @@ func (a *AgentProc) attach(ctx context.Context, cmd *exec.Cmd, tail *stderrTail,
 	a.startReaper(g)
 	g.conn = acp.NewConnection(a.dispatch, stdin, stdout)
 
+	// Deprecated: the legacy system-prompt offer, kept for one release
+	// so agents that predate the stable sessionCapabilities.systemPrompt
+	// still advertise their side of the acp-kit extension.
 	clientMeta := map[string]any{
-		"session.systemPrompt": map[string]any{"version": 1},
+		legacySystemPromptKey: map[string]any{"version": 1},
 	}
 	for k, v := range a.cfg.ClientMeta {
 		clientMeta[k] = v
@@ -546,11 +552,27 @@ func isPipeErr(err error) bool {
 }
 
 // track records a session opened on generation g for respawn recovery.
-func (a *AgentProc) track(sid acp.SessionId, cwd string, meta map[string]any, g *gen) {
+// meta is the session/new _meta without any system prompt; sys is the
+// session's system prompt blocks (nil for none).
+func (a *AgentProc) track(sid acp.SessionId, cwd string, meta map[string]any, sys []acp.ContentBlock, g *gen) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.untrackLocked(sid)
-	a.sess[sid] = &sessRec{cwd: cwd, meta: meta, gen: g.n, wire: sid}
+	a.sess[sid] = &sessRec{cwd: cwd, meta: meta, sys: sys, gen: g.n, wire: sid}
+}
+
+// systemPromptOf returns the system prompt blocks recorded for sid, or nil
+// when sid is untracked or has none.
+func (a *AgentProc) systemPromptOf(sid acp.SessionId) []acp.ContentBlock {
+	a.mu.Lock()
+	rec := a.sess[sid]
+	a.mu.Unlock()
+	if rec == nil {
+		return nil
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return rec.sys
 }
 
 // untrackLocked forgets sid and any wire alias pointing at it. a.mu held.
@@ -623,14 +645,19 @@ func (a *AgentProc) route(ctx context.Context, sid acp.SessionId) (*gen, acp.Ses
 
 // recoverSession re-establishes rec on generation g: session/resume if the
 // agent supports it, else session/load (history replay muted), else a new
-// session under the same cwd and _meta. rec.mu held.
+// session under the same cwd and _meta. The system prompt is re-sent in the
+// form the new child advertises: params.systemPrompt on every request with
+// the stable capability, else the deprecated _meta entry on session/new
+// only. rec.mu held.
 func (a *AgentProc) recoverSession(ctx context.Context, g *gen, sid acp.SessionId, rec *sessRec) error {
 	caps := a.Caps()
 	mcp := a.cfg.mcpFor(rec.cwd)
+	sp := stableSystemPrompt(caps, rec.sys)
 	log := a.logger().With("session", sid, "wire", rec.wire)
 	if caps.ResumeSession {
 		resp, err := rpc[sessionResponse](ctx, g, "session/resume", resumeSessionRequest{
 			SessionId: string(rec.wire), Cwd: rec.cwd, McpServers: mcp, Meta: originOnly(rec.meta),
+			SystemPrompt: sp,
 		})
 		if err == nil {
 			a.adopt(sid, rec, g, rec.wire, resp)
@@ -644,8 +671,11 @@ func (a *AgentProc) recoverSession(ctx context.Context, g *gen, sid acp.SessionI
 	}
 	if caps.LoadSession {
 		a.setMuted(rec.wire, true)
-		resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionLoad, acp.LoadSessionRequest{
-			SessionId: rec.wire, Cwd: rec.cwd, McpServers: mcp, Meta: originOnly(rec.meta),
+		resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionLoad, loadSessionRequest{
+			LoadSessionRequest: acp.LoadSessionRequest{
+				SessionId: rec.wire, Cwd: rec.cwd, McpServers: mcp, Meta: originOnly(rec.meta),
+			},
+			SystemPrompt: sp,
 		})
 		a.setMuted(rec.wire, false)
 		if err == nil {
@@ -658,8 +688,11 @@ func (a *AgentProc) recoverSession(ctx context.Context, g *gen, sid acp.SessionI
 		}
 		log.Warn("acp agent: session/load after respawn failed", "err", err)
 	}
-	resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionNew, acp.NewSessionRequest{
-		Cwd: rec.cwd, McpServers: mcp, Meta: rec.meta,
+	resp, err := rpc[sessionResponse](ctx, g, acp.AgentMethodSessionNew, newSessionRequest{
+		NewSessionRequest: acp.NewSessionRequest{
+			Cwd: rec.cwd, McpServers: mcp, Meta: withLegacySystemPrompt(caps, rec.meta, rec.sys),
+		},
+		SystemPrompt: sp,
 	})
 	if err != nil {
 		return fmt.Errorf("re-establish session %s after agent respawn: %w", sid, err)
