@@ -115,14 +115,16 @@ func TestTurnLiveness_CosmeticUpdateDoesNotReset(t *testing.T) {
 }
 
 func TestTurnLiveness_CeilingOffByDefault(t *testing.T) {
-	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: 40 * time.Millisecond})
+	// A wide window: under -race on a loaded box one sleep can overshoot a
+	// tight window and cut the turn for lack of progress, not a ceiling.
+	live, ctx, stop := StartTurnLiveness(context.Background(), TurnLivenessConfig{NoProgressTimeout: 250 * time.Millisecond})
 	defer stop()
 	if _, ok := ctx.Deadline(); ok {
 		t.Fatal("MaxTurnDuration <=0 must set no deadline")
 	}
 	sink := live.Wrap(&recordSink{})
-	// Keep making progress for far longer than any default ceiling would be.
-	for i := 0; i < 10; i++ {
+	// Keep making progress for longer than the window.
+	for i := 0; i < 30; i++ {
 		_ = sink.OnUpdate(ctx, note(acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{Content: acp.TextBlock("x")}}))
 		time.Sleep(15 * time.Millisecond)
 	}
