@@ -186,9 +186,13 @@ type Config struct {
 type Store struct {
 	cfg Config
 
-	mu     sync.Mutex
-	items  map[string]*Item
-	depths map[string][]int // conv -> depths of the fires running right now
+	mu    sync.Mutex
+	items map[string]*Item
+	// firing holds one entry per fire running right now. An entry is
+	// a pointer, not a (conv, depth) pair in a map keyed by conv, so
+	// Rekey can move a running fire to its conversation's new token
+	// and the fire still finds its own entry when it ends.
+	firing map[*firing]struct{}
 
 	wg sync.WaitGroup
 }
@@ -224,7 +228,7 @@ func Open(cfg Config) (*Store, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	s := &Store{cfg: cfg, items: map[string]*Item{}, depths: map[string][]int{}}
+	s := &Store{cfg: cfg, items: map[string]*Item{}, firing: map[*firing]struct{}{}}
 	b, err := os.ReadFile(cfg.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -328,6 +332,58 @@ func (s *Store) Remove(conv, id string) error {
 	return s.commitLocked(func() { s.items[id] = it })
 }
 
+// Rekey moves every item armed for conversation from to conversation
+// to, and returns how many it moved.
+//
+// A relay whose conversation token can change — zulip-acp keys a
+// conversation by its topic, and a topic can be renamed — calls it when
+// the token changes. Without it, every item armed for the old token
+// fires into a conversation that no longer exists and is dropped as
+// gone.
+//
+// The fires that run in from right now move too, so a schedule that a
+// running scheduled turn arms after the move still gets its parent's
+// depth. A move is not an arm: MaxPerConv is not checked, so nothing
+// armed is lost when two conversations become one.
+//
+// from == to, or an empty token, is a no-op.
+func (s *Store) Rekey(from, to string) (int, error) {
+	if from == to || from == "" || to == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var fires []*firing
+	for f := range s.firing {
+		if f.conv == from {
+			f.conv = to
+			fires = append(fires, f)
+		}
+	}
+	var moved []*Item
+	for _, it := range s.items {
+		if it.Conv == from {
+			it.Conv = to
+			moved = append(moved, it)
+		}
+	}
+	if len(moved) == 0 {
+		return 0, nil
+	}
+	err := s.commitLocked(func() {
+		for _, f := range fires {
+			f.conv = from
+		}
+		for _, it := range moved {
+			it.Conv = from
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(moved), nil
+}
+
 // Run drives the fire loop until ctx is done. It returns once every
 // in-flight fire has finished, so a relay can shut down cleanly.
 func (s *Store) Run(ctx context.Context) {
@@ -403,16 +459,24 @@ func nextAfter(at time.Time, every time.Duration, now time.Time) time.Time {
 	return next.UTC()
 }
 
+// firing is one running fire: the conversation it runs in and its
+// depth. Caller holds mu to read or write conv.
+type firing struct {
+	conv  string
+	depth int
+}
+
 // start runs one fire, tracking its depth for the whole turn so any
 // schedule the turn creates is attributed to it.
 func (s *Store) start(ctx context.Context, it Item) {
+	f := &firing{conv: it.Conv, depth: it.Depth}
 	s.mu.Lock()
-	s.depths[it.Conv] = append(s.depths[it.Conv], it.Depth)
+	s.firing[f] = struct{}{}
 	s.mu.Unlock()
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer s.popDepth(it)
+		defer s.endFire(f)
 		err := s.cfg.Fire(ctx, it)
 		if err == nil {
 			return
@@ -430,29 +494,20 @@ func (s *Store) start(ctx context.Context, it Item) {
 	}()
 }
 
-// popDepth removes one recorded depth for the conversation.
-func (s *Store) popDepth(it Item) {
+// endFire forgets a fire that has finished.
+func (s *Store) endFire(f *firing) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	d := s.depths[it.Conv]
-	for i, v := range d {
-		if v == it.Depth {
-			s.depths[it.Conv] = append(d[:i], d[i+1:]...)
-			break
-		}
-	}
-	if len(s.depths[it.Conv]) == 0 {
-		delete(s.depths, it.Conv)
-	}
+	delete(s.firing, f)
 }
 
 // parentDepthLocked is the deepest scheduled turn firing in conv right
 // now, or 0 when none is. Caller holds mu.
 func (s *Store) parentDepthLocked(conv string) int {
 	max := 0
-	for _, d := range s.depths[conv] {
-		if d > max {
-			max = d
+	for f := range s.firing {
+		if f.conv == conv && f.depth > max {
+			max = f.depth
 		}
 	}
 	return max

@@ -307,6 +307,25 @@ func (t *Tools) scheduleTools() []Tool {
 	}}
 }
 
+// Rekey moves what the agent deferred in conversation from to
+// conversation to. A relay whose conversation token can change —
+// zulip-acp keys a conversation by its topic, and a topic can be
+// renamed by the same turn that asked for new_session — calls it when
+// the token changes, before EndTurn. Without it, EndTurn under the new
+// token finds nothing, and the request stays under the old token, where
+// a later conversation of that name would inherit it.
+func (t *Tools) Rekey(from, to string) {
+	if from == to {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.pending[from] {
+		delete(t.pending, from)
+		t.pending[to] = true
+	}
+}
+
 // EndTurn applies whatever the agent deferred during the turn that has
 // just finished in convToken. The relay calls it once per completed
 // turn, AFTER the answer has been posted.

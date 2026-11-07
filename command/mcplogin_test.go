@@ -329,3 +329,41 @@ func TestMCPLogin_NewSessionDropsPending(t *testing.T) {
 		t.Fatalf("failed reset: %v", err)
 	}
 }
+
+func TestRekeyMovesPendingLogin(t *testing.T) {
+	ctx := context.Background()
+	b, a := mcpBroker(needsRedirect, reply{res: client.AuthResult{State: "cancelled"}})
+	b.Handle(ctx, "c1", "!mcp login github")
+	b.Rekey("c1", "c1") // no-op
+	if !b.HasPending("c1") {
+		t.Fatal("a no-op Rekey dropped the login")
+	}
+	b.Rekey("c1", "moved")
+	if b.HasPending("c1") || !b.HasPending("moved") {
+		t.Fatal("the pending login did not follow the conversation")
+	}
+	// Nothing pending under from: nothing happens.
+	b.Rekey("c1", "elsewhere")
+	if b.HasPending("elsewhere") || !b.HasPending("moved") {
+		t.Fatal("a Rekey with nothing to move changed state")
+	}
+	if len(a.sess) != 1 {
+		t.Fatalf("a move cancelled something: %#v", a.sess)
+	}
+}
+
+func TestRekeyClashKeepsDestination(t *testing.T) {
+	ctx := context.Background()
+	b, a := mcpBroker(needsRedirect, needsRedirect, reply{res: client.AuthResult{State: "cancelled"}})
+	b.ctrl.(*locCtrl).sids["c2"] = "sess-2"
+	b.Handle(ctx, "c1", "!mcp login github")
+	b.Handle(ctx, "c2", "!mcp login github")
+	b.Rekey("c1", "c2")
+	if b.HasPending("c1") || !b.HasPending("c2") {
+		t.Fatal("a clash must keep the destination's login and drop the source's")
+	}
+	want := sessCall{"sess-1", call{"mcp:github", "p-1", "", true}}
+	if len(a.sess) != 3 || a.sess[2] != want {
+		t.Fatalf("the source login was not cancelled: %#v", a.sess)
+	}
+}

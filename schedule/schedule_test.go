@@ -527,24 +527,131 @@ func TestDepthCapStopsRunaway(t *testing.T) {
 	}
 }
 
-func TestPopDepthTracksConcurrentFires(t *testing.T) {
+func TestFiringTracksConcurrentFires(t *testing.T) {
 	h := newHarness(t, nil)
-	// Two items, same conversation, different depths, both firing.
+	// Two fires, same conversation, different depths, both running.
 	s := h.store
-	s.depths["c"] = []int{1, 2}
+	one, two := &firing{conv: "c", depth: 1}, &firing{conv: "c", depth: 2}
+	s.firing[one], s.firing[two] = struct{}{}, struct{}{}
 	if got := s.parentDepthLocked("c"); got != 2 {
 		t.Fatalf("parentDepth = %d, want 2", got)
 	}
-	s.popDepth(Item{Conv: "c", Depth: 2})
+	if got := s.parentDepthLocked("other"); got != 0 {
+		t.Fatalf("parentDepth(other) = %d, want 0", got)
+	}
+	s.endFire(two)
 	if got := s.parentDepthLocked("c"); got != 1 {
-		t.Fatalf("parentDepth after pop = %d, want 1", got)
+		t.Fatalf("parentDepth after end = %d, want 1", got)
 	}
-	s.popDepth(Item{Conv: "c", Depth: 1})
-	if _, still := s.depths["c"]; still {
-		t.Fatal("empty depth list was not cleaned up")
+	s.endFire(one)
+	if len(s.firing) != 0 {
+		t.Fatal("ended fires were not cleaned up")
 	}
-	// Popping something that is not there is a no-op, not a panic.
-	s.popDepth(Item{Conv: "c", Depth: 9})
+	// Ending something that is not there is a no-op, not a panic.
+	s.endFire(one)
+}
+
+func TestRekeyMovesItems(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, c := range []string{"a", "a", "b"} {
+		if _, err := h.store.Add(c, "x", epoch.Add(time.Hour), 0); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	n, err := h.store.Rekey("a", "z")
+	if err != nil || n != 2 {
+		t.Fatalf("Rekey = %d, %v; want 2, nil", n, err)
+	}
+	if got := h.store.List("a"); len(got) != 0 {
+		t.Fatalf("items left under the old token: %+v", got)
+	}
+	if got := h.store.List("z"); len(got) != 2 {
+		t.Fatalf("List(z) = %+v, want 2 items", got)
+	}
+	if got := h.store.List("b"); len(got) != 1 {
+		t.Fatalf("an unrelated conversation moved: %+v", got)
+	}
+	// The move is on disk.
+	s2, err := Open(Config{Path: h.path, Fire: func(context.Context, Item) error { return nil }})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got := s2.List("z"); len(got) != 2 {
+		t.Fatalf("reopened List(z) = %+v, want 2 items", got)
+	}
+}
+
+func TestRekeyNoOps(t *testing.T) {
+	h := newHarness(t, nil)
+	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for _, c := range [][2]string{{"a", "a"}, {"", "a"}, {"a", ""}, {"none", "z"}} {
+		if n, err := h.store.Rekey(c[0], c[1]); n != 0 || err != nil {
+			t.Fatalf("Rekey(%q, %q) = %d, %v; want 0, nil", c[0], c[1], n, err)
+		}
+	}
+	if got := h.store.List("a"); len(got) != 1 {
+		t.Fatalf("a no-op moved items: %+v", got)
+	}
+}
+
+func TestRekeyCommitFailureUndoes(t *testing.T) {
+	h := newHarness(t, nil)
+	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	f := &firing{conv: "a", depth: 1}
+	h.store.firing[f] = struct{}{}
+	// Replace the parent dir with a file so MkdirAll fails.
+	if err := os.RemoveAll(filepath.Dir(h.path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Dir(h.path), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := h.store.Rekey("a", "z"); err == nil || n != 0 {
+		t.Fatalf("Rekey = %d, %v; want 0 and a save error", n, err)
+	}
+	if got := h.store.List("a"); len(got) != 1 {
+		t.Fatalf("a failed Rekey moved items: %+v", got)
+	}
+	if f.conv != "a" {
+		t.Fatalf("a failed Rekey moved a running fire to %q", f.conv)
+	}
+}
+
+// TestRekeyCarriesRunningDepth pins the recursion guard across a move:
+// a scheduled turn whose conversation is re-keyed mid-turn must still
+// arm its children one level deeper, not as fresh depth-1 items.
+func TestRekeyCarriesRunningDepth(t *testing.T) {
+	h := newHarness(t, nil)
+	type result struct {
+		it  Item
+		err error
+	}
+	got := make(chan result, 1)
+	h.fire = func(_ context.Context, it Item) error {
+		if _, err := h.store.Rekey(it.Conv, "moved"); err != nil {
+			got <- result{err: err}
+			return nil
+		}
+		child, err := h.store.Add("moved", "child", h.clock.now().Add(time.Hour), 0)
+		got <- result{child, err}
+		return nil
+	}
+	if _, err := h.store.Add("c", "start", epoch, 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	h.run()
+	h.tick()
+	r := <-got
+	if r.err != nil {
+		t.Fatalf("child: %v", r.err)
+	}
+	if r.it.Depth != 2 {
+		t.Fatalf("child depth = %d, want 2", r.it.Depth)
+	}
 }
 
 func TestItemJSONErrors(t *testing.T) {
@@ -623,7 +730,7 @@ func TestSaveRenameFailure(t *testing.T) {
 	s := &Store{
 		cfg:    Config{Path: target, Now: func() time.Time { return epoch }, Logf: func(string, ...any) {}},
 		items:  map[string]*Item{},
-		depths: map[string][]int{},
+		firing: map[*firing]struct{}{},
 	}
 	if err := s.saveLocked(); err == nil {
 		t.Fatal("want rename error")

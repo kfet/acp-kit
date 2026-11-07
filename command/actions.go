@@ -339,6 +339,34 @@ func (b *Broker) dropSessionLogin(convID string) {
 	}
 }
 
+// Rekey moves the conversation's pending login from token from to
+// token to. A relay whose conversation token can change — zulip-acp
+// keys a conversation by its topic, and a topic can be renamed — calls
+// it when the token changes, so the paste that finishes the login is
+// still recognised where the conversation now is.
+//
+// When to already waits for a login, that one is kept and the one
+// under from is cancelled, best effort: one conversation has one
+// pending login. from == to is a no-op.
+func (b *Broker) Rekey(from, to string) {
+	if from == to {
+		return
+	}
+	b.mu.Lock()
+	e, ok := b.pending[from]
+	_, clash := b.pending[to]
+	if ok {
+		delete(b.pending, from)
+		if !clash {
+			b.pending[to] = e
+		}
+	}
+	b.mu.Unlock()
+	if ok && clash {
+		_, _ = b.authenticate(context.Background(), e, "", true)
+	}
+}
+
 // Post sends a message into the conversation out of band. See Poster
 // for why there is no target.
 func (b *Broker) Post(convID, text string) error {

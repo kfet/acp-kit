@@ -430,3 +430,28 @@ func TestPostToolReportsIDs(t *testing.T) {
 		t.Fatalf("post = %q, %v", got, err)
 	}
 }
+
+// TestRekeyCarriesDeferredNewSession pins new_session across a topic
+// rename in the same turn: EndTurn runs under the new token.
+func TestRekeyCarriesDeferredNewSession(t *testing.T) {
+	c := &ctrl{}
+	tools := newTools(t, c, nil)
+	if _, err := call(t, tools, ToolNewSession, "old", `{}`); err != nil {
+		t.Fatalf("new_session: %v", err)
+	}
+	tools.Rekey("old", "old") // no-op
+	tools.Rekey("none", "x")  // nothing to move
+	tools.Rekey("old", "new")
+	tools.EndTurn("old")
+	if len(c.resets) != 0 {
+		t.Fatalf("the old token still held the request: %v", c.resets)
+	}
+	tools.EndTurn("new")
+	if len(c.resets) != 1 || c.resets[0] != "new" {
+		t.Fatalf("resets = %v, want [new]", c.resets)
+	}
+	tools.EndTurn("x")
+	if len(c.resets) != 1 {
+		t.Fatalf("a Rekey with nothing to move armed a reset: %v", c.resets)
+	}
+}
