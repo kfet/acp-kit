@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-11-11
+
 ### Added
 - `mcphost`: server side of the draft MCP extension `io.modelcontextprotocol/files`, inline transfers only. `initialize` and the new `server/discover` method advertise `{maxInlineBytes}` under `capabilities.extensions` (`Config.MaxInlineBytes`, default 8 MiB, negative turns it off). Tools with a top-level `x-mcp-file` argument (`mcphost.FileSchema`) are listed only to clients that declare the extension in request `_meta`. File arguments are validated before the handler runs (shape, size, `maxSize`, `accept`, `digest`, duplicate ids, inline total), and handlers decode them with `mcphost.DecodeFile`. No out-of-band upload and no download targets: on stdio the spec requires `https` targets.
 - `command.FilePoster`, `command.OutFile`, `Broker.SetFilePoster`, `Broker.CanPostFile`, `Broker.PostFile` and `command.SafeFileName`: an optional capability to deliver a file into the calling conversation as an attachment. `PostFile` reduces the name to a safe base name (control, format and bidi characters removed) and re-serialises the media type, falling back to `application/octet-stream`.
