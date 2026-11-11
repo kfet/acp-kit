@@ -61,15 +61,17 @@ import (
 
 // Tool names exposed to the agent.
 const (
-	ToolStatus        = "status"
-	ToolListModels    = "list_models"
-	ToolSetModel      = "set_model"
-	ToolNewSession    = "new_session"
-	ToolPost          = "post"
-	ToolSchedule      = "schedule"
-	ToolListSchedules = "list_schedules"
-	ToolUnschedule    = "unschedule"
-	ToolSendFile      = "send_file"
+	ToolStatus          = "status"
+	ToolListModels      = "list_models"
+	ToolSetModel        = "set_model"
+	ToolNewSession      = "new_session"
+	ToolPost            = "post"
+	ToolSchedule        = "schedule"
+	ToolListSchedules   = "list_schedules"
+	ToolUnschedule      = "unschedule"
+	ToolSendFile        = "send_file"
+	ToolListAttachments = "list_attachments"
+	ToolFetchAttachment = "fetch_attachment"
 )
 
 // DefaultMaxFileBytes is the per-file x-mcp-file maxSize of send_file
@@ -105,7 +107,12 @@ type Tool struct {
 	Name        string
 	Description string
 	Schema      map[string]any
-	Handler     mcphost.Handler
+	// Handler is the plain form. For a tool that also sets Call it runs
+	// Call and returns only its text: no out-of-band files, no downloads.
+	Handler mcphost.Handler
+	// Call, when set, is the full form Register installs with
+	// mcphost.Host.ToolCall: out-of-band uploads and download targets.
+	Call mcphost.CallHandler
 }
 
 // Tools is the registered tool set plus the deferred-action state that
@@ -134,9 +141,17 @@ func New(cfg Config) (*Tools, error) {
 	return &Tools{cfg: cfg, pending: map[string]bool{}}, nil
 }
 
-// Register installs the tool set on h, in Tools order.
+// Register installs the tool set on h, in Tools order, and, when the
+// Broker has an UploadTargeter, makes it h's upload provider.
 func (t *Tools) Register(h *mcphost.Host) {
+	if u, ok := t.cfg.Broker.UploadTargeter(); ok {
+		h.SetUploads(uploadProvider{t: t, u: u})
+	}
 	for _, x := range t.Tools() {
+		if x.Call != nil {
+			h.ToolCall(x.Name, x.Description, x.Schema, x.Call)
+			continue
+		}
 		h.Tool(x.Name, x.Description, x.Schema, x.Handler)
 	}
 }
@@ -234,54 +249,18 @@ func (t *Tools) Tools() []Tool {
 		})
 	}
 
-	if t.cfg.Broker.CanPostFile() {
+	_, canUpload := t.cfg.Broker.UploadTargeter()
+	if t.cfg.Broker.CanPostFile() || canUpload {
 		out = append(out, t.sendFileTool())
+	}
+	if _, ok := t.cfg.Broker.DownloadLinker(); ok {
+		out = append(out, t.attachmentTools()...)
 	}
 
 	if t.cfg.Broker.CanSchedule() {
 		out = append(out, t.scheduleTools()...)
 	}
 	return out
-}
-
-// sendFileTool delivers a file into the conversation. Its `file`
-// argument carries x-mcp-file, so the CLIENT fills it from a file the
-// host can read (the model never emits the bytes), and mcphost lists
-// the tool only to clients that declared the files extension.
-func (t *Tools) sendFileTool() Tool {
-	return Tool{
-		Name: ToolSendFile,
-		Description: "Send a file into this conversation as an attachment, right now, outside the answer " +
-			"you are streaming. Use it to hand the user an artifact you produced: a report, an image, " +
-			"a log, an archive. It always sends here — there is no way to address anywhere else.",
-		Schema: objectSchemaReq(map[string]any{
-			"file": mcphost.FileSchema(mcphost.FileInputDescriptor{MaxSize: t.cfg.MaxFileBytes},
-				"The file to send."),
-			"caption": strProp("Optional text to accompany the file. Not every relay shows it."),
-		}, "file"),
-		Handler: t.wrap(func(conv string, args json.RawMessage) (string, error) {
-			var a struct {
-				File    json.RawMessage `json:"file"`
-				Caption string          `json:"caption"`
-			}
-			if err := decode(args, &a); err != nil {
-				return "", err
-			}
-			f, err := mcphost.DecodeFile(a.File)
-			if err != nil {
-				return "", err
-			}
-			ids, err := t.cfg.Broker.PostFile(conv, command.OutFile{Name: f.Name, MimeType: f.MimeType, Data: f.Data, Caption: a.Caption})
-			if err != nil {
-				return "", err
-			}
-			msg := fmt.Sprintf("Sent %s (%d bytes) to this conversation", command.SafeFileName(f.Name), len(f.Data))
-			if len(ids) > 0 {
-				msg += " as message id(s): " + strings.Join(ids, ", ")
-			}
-			return msg + ".", nil
-		}),
-	}
 }
 
 // scheduleTools is the scheduling trio.

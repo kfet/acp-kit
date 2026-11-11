@@ -45,7 +45,14 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-const mcpProtocolVersion = "2025-06-18"
+const (
+	mcpProtocolVersion = "2025-06-18"
+	// statelessProtocolVersion is offered from server/discover. The
+	// files extension needs it: clients enable it only on 2026-07-28 or
+	// later.
+	statelessProtocolVersion = "2026-07-28"
+	serverInfoMeta           = "io.modelcontextprotocol/serverInfo"
+)
 
 // runMCP runs the MCP server loop over r/w until r hits EOF. Each
 // tools/call is dispatched to a registered handler with sessionKey bound.
@@ -83,17 +90,27 @@ func (h *Host) handleLine(line []byte, enc *json.Encoder, sessionKey string) err
 	}
 	resp := rpcMessage{JSONRPC: "2.0", ID: msg.ID}
 	switch msg.Method {
-	case "initialize", "server/discover":
-		// server/discover is where the files extension says servers
-		// advertise it; initialize carries the same capabilities for
-		// clients still on the initialize handshake.
+	case "server/discover":
+		// SEP-2575 stateless discovery (protocol 2026-07-28), where the
+		// files extension is advertised. A client that gets no common
+		// version here falls back to initialize.
+		resp.Result = map[string]any{
+			"supportedVersions": []string{statelessProtocolVersion},
+			"capabilities":      h.capabilities(),
+			"_meta": map[string]any{
+				serverInfoMeta: map[string]any{"name": h.cfg.ServerInfoName, "version": h.cfg.ServerInfoVersion},
+			},
+		}
+	case "initialize":
+		// The legacy handshake carries the same capabilities.
 		resp.Result = map[string]any{
 			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    h.capabilities(),
 			"serverInfo":      map[string]any{"name": h.cfg.ServerInfoName, "version": h.cfg.ServerInfoVersion},
 		}
 	case "tools/list":
-		resp.Result = map[string]any{"tools": h.toolSpecs(clientDeclaresFiles(msg.Params))}
+		files, _ := clientDeclaresFiles(msg.Params)
+		resp.Result = map[string]any{"tools": h.toolSpecs(files)}
 	case "tools/call":
 		resp.Result = h.handleToolCall(msg.Params, sessionKey)
 	case "ping":
@@ -134,8 +151,9 @@ func (h *Host) toolSpecs(files bool) []any {
 
 func (h *Host) handleToolCall(params json.RawMessage, sessionKey string) map[string]any {
 	var p struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
+		Name         string          `json:"name"`
+		Arguments    json.RawMessage `json:"arguments"`
+		RequestState string          `json:"requestState"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return toolError("invalid params: " + err.Error())
@@ -144,14 +162,27 @@ func (h *Host) handleToolCall(params json.RawMessage, sessionKey string) map[str
 	if !ok {
 		return toolError("unknown tool: " + p.Name)
 	}
-	if err := h.checkFiles(t, p.Arguments); err != nil {
-		return toolError(err.Error())
-	}
-	text, err := t.handler(sessionKey, p.Arguments)
+	specs, err := h.checkFiles(t, p.Arguments)
 	if err != nil {
 		return toolError(err.Error())
 	}
-	return okText(text)
+	var files map[string]UploadedFile
+	switch {
+	case p.RequestState != "" && len(specs) == 0:
+		return toolError("unexpected requestState: this call sends no file out of band")
+	case p.RequestState != "":
+		if files, err = h.resume(sessionKey, t, p.Arguments, specs, p.RequestState); err != nil {
+			return toolError(err.Error())
+		}
+	case len(specs) > 0:
+		return h.requestUploads(sessionKey, t, p.Arguments, specs)
+	}
+	res, err := t.handler(Call{SessionKey: sessionKey, Args: p.Arguments, Files: files})
+	if err != nil {
+		return toolError(err.Error())
+	}
+	_, download := clientDeclaresFiles(params)
+	return withDownloads(okText(res.Text), res, download && h.filesCapability() != nil)
 }
 
 func okText(text string) map[string]any {

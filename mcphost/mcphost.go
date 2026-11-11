@@ -149,6 +149,11 @@ type Host struct {
 	tools   map[string]*tool
 	toolsIn []*tool // registration order (stable tools/list output)
 
+	uploads  UploadProvider   // optional; see SetUploads
+	stateKey []byte           // HMAC key for requestState; carried by ExportTokens
+	stateMu  sync.Mutex       // guards spent
+	spent    map[string]int64 // used requestState nonce -> expiry (unix s)
+
 	ln net.Listener
 	wg sync.WaitGroup
 
@@ -161,7 +166,8 @@ type tool struct {
 	name        string
 	description string
 	inputSchema map[string]any
-	handler     Handler
+	handler     CallHandler
+	call        bool                           // registered with ToolCall: may take out-of-band files
 	files       map[string]FileInputDescriptor // x-mcp-file arguments
 }
 
@@ -221,6 +227,9 @@ func New(cfg Config) (*Host, error) {
 		byKey:   make(map[string]string),
 		tools:   make(map[string]*tool),
 		conns:   make(map[io.Closer]struct{}),
+
+		stateKey: newKey(),
+		spent:    make(map[string]int64),
 	}, nil
 }
 
@@ -263,19 +272,33 @@ func socketDir(cfg Config) (dir string, ownDir bool, err error) {
 // name twice replaces the earlier entry in place. Not safe to call
 // concurrently with the accept loop; register all tools before Listen.
 func (h *Host) Tool(name, description string, inputSchema map[string]any, handler Handler) {
-	t := &tool{name: name, description: description, inputSchema: inputSchema, handler: handler,
-		files: fileParams(inputSchema)}
-	if _, exists := h.tools[name]; !exists {
+	h.addTool(&tool{name: name, description: description, inputSchema: inputSchema,
+		handler: func(c Call) (Result, error) {
+			text, err := handler(c.SessionKey, c.Args)
+			return Result{Text: text}, err
+		}})
+}
+
+// ToolCall registers a tool like Tool, with a CallHandler: its file
+// arguments may arrive out of band (Call.Files, when SetUploads is in
+// effect) and it may return download targets (Result.Downloads).
+func (h *Host) ToolCall(name, description string, inputSchema map[string]any, handler CallHandler) {
+	h.addTool(&tool{name: name, description: description, inputSchema: inputSchema, handler: handler, call: true})
+}
+
+func (h *Host) addTool(t *tool) {
+	t.files = fileParams(t.inputSchema)
+	if _, exists := h.tools[t.name]; !exists {
 		h.toolsIn = append(h.toolsIn, t)
 	} else {
-		for i, ex := range h.toolsIn {
-			if ex.name == name {
+		for i, old := range h.toolsIn {
+			if old.name == t.name {
 				h.toolsIn[i] = t
 				break
 			}
 		}
 	}
-	h.tools[name] = t
+	h.tools[t.name] = t
 }
 
 // SocketPath returns the unix socket path (known before Listen).
@@ -326,6 +349,11 @@ func (h *Host) resolve(token string) (sessionKey string, ok bool) {
 type tokenRegistry struct {
 	Version int               `json:"v"`
 	Tokens  map[string]string `json:"tokens"` // sessionKey -> token
+	// StateKey and Spent carry the requestState HMAC key and the used
+	// nonces, so an upload_required issued before a re-exec can still be
+	// retried after it, and only once. Absent in older blobs.
+	StateKey []byte           `json:"stateKey,omitempty"`
+	Spent    map[string]int64 `json:"spent,omitempty"`
 }
 
 const tokenRegistryVersion = 1
@@ -349,7 +377,14 @@ func (h *Host) ExportTokens() string {
 		reg.Tokens[key] = tok
 	}
 	h.regMu.Unlock()
-	b, _ := json.Marshal(reg) // map[string]string cannot fail to marshal
+	h.stateMu.Lock()
+	reg.StateKey = h.stateKey
+	reg.Spent = make(map[string]int64, len(h.spent))
+	for n, e := range h.spent {
+		reg.Spent[n] = e
+	}
+	h.stateMu.Unlock()
+	b, _ := json.Marshal(reg) // maps of strings and ints cannot fail to marshal
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -386,6 +421,14 @@ func (h *Host) SeedTokens(blob string) error {
 		h.byKey[key] = tok
 	}
 	h.regMu.Unlock()
+	h.stateMu.Lock()
+	if len(reg.StateKey) > 0 {
+		h.stateKey = reg.StateKey
+	}
+	for n, e := range reg.Spent {
+		h.spent[n] = e
+	}
+	h.stateMu.Unlock()
 	return nil
 }
 
@@ -529,6 +572,13 @@ var chmod = os.Chmod
 
 // newToken returns a 16-byte random hex token. Since Go 1.24,
 // crypto/rand.Read never returns an error.
+// newKey returns a fresh 32-byte HMAC key.
+func newKey() []byte {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return b
+}
+
 func newToken() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)

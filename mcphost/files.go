@@ -2,7 +2,8 @@ package mcphost
 
 // Server side of the draft MCP extension io.modelcontextprotocol/files
 // (github.com/modelcontextprotocol/experimental-ext-file-uploads,
-// specification/draft/file-uploads.md), INLINE TRANSFERS ONLY.
+// specification/draft/file-uploads.md). Out-of-band transfers, which need
+// an https endpoint the relay supplies, are in oob.go.
 //
 // What is implemented, and why the rest is not:
 //
@@ -14,10 +15,9 @@ package mcphost
 //     inline total — before the handler runs, answering isError without
 //     running the tool on any failure, as the spec requires.
 //   - Out-of-band uploads (`upload`, upload_required) and download
-//     targets are NOT offered. The Host is reached over stdio, and on
-//     stdio the spec allows only absolute https `url` targets with
-//     credentials "omit"; a relay listening on a local unix socket has
-//     no such endpoint to hand out.
+//     targets are offered only through a relay-supplied provider (see
+//     oob.go): on stdio the spec allows only absolute https `url`
+//     targets with credentials "omit", and mcphost has none of its own.
 //
 // Tools carrying x-mcp-file are listed only to clients that declare the
 // extension in the request's _meta, per the spec's Backward
@@ -150,8 +150,8 @@ func fileParams(schema map[string]any) map[string]FileInputDescriptor {
 // DecodeFile decodes and validates one inline FileInput argument: id
 // length, mimeType, a non-negative size that matches the decoded bytes,
 // and the digest when present. A size-0 file with no data is a valid
-// empty file. A non-empty file without data is refused, since this
-// server offers no out-of-band upload.
+// empty file. A non-empty file without data is refused here: an
+// out-of-band file reaches a ToolCall handler as Call.Files instead.
 //
 // The Host already ran this (plus maxSize, accept and the inline
 // total) before invoking the handler; handlers call it to get the
@@ -233,22 +233,25 @@ func accepts(accept []string, f File) bool {
 }
 
 // checkFiles validates every x-mcp-file argument of a call before the
-// handler runs. An error means isError without running the tool.
-func (h *Host) checkFiles(t *tool, args json.RawMessage) error {
+// handler runs. An error means isError without running the tool. A
+// non-empty file sent without data, on a ToolCall tool while an upload
+// provider is set, is an out-of-band file: it is validated on its claims
+// and returned as an UploadSpec (sorted by argument name) instead.
+func (h *Host) checkFiles(t *tool, args json.RawMessage) ([]UploadSpec, error) {
 	if len(t.files) == 0 {
-		return nil
+		return nil, nil
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(args, &m); err != nil {
-		return nil // the handler reports malformed arguments itself
+		return nil, nil // the handler reports malformed arguments itself
 	}
 	if h.cfg.MaxInlineBytes < 0 {
 		for name := range t.files {
 			if _, ok := m[name]; ok {
-				return errors.New("this server does not accept files")
+				return nil, errors.New("this server does not accept files")
 			}
 		}
-		return nil
+		return nil, nil
 	}
 	names := make([]string, 0, len(t.files))
 	for name := range t.files {
@@ -256,6 +259,7 @@ func (h *Host) checkFiles(t *tool, args json.RawMessage) error {
 	}
 	sort.Strings(names)
 	var total int64
+	var specs []UploadSpec
 	ids := map[string]bool{}
 	for _, name := range names {
 		desc := t.files[name]
@@ -263,27 +267,55 @@ func (h *Host) checkFiles(t *tool, args json.RawMessage) error {
 		if !ok || bytes.Equal(raw, []byte("null")) {
 			continue
 		}
-		f, err := DecodeFile(raw)
+		f, sp, err := h.decodeArg(t, name, desc, raw)
 		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		if ids[f.ID] {
-			return fmt.Errorf("%s: duplicate file id %q", name, f.ID)
+			return nil, fmt.Errorf("%s: duplicate file id %q", name, f.ID)
 		}
 		ids[f.ID] = true
 		size := int64(len(f.Data))
+		if sp != nil {
+			size = sp.Size
+		}
 		if desc.MaxSize > 0 && size > desc.MaxSize {
-			return fmt.Errorf("%s: file is %d bytes, over the %d-byte limit", name, size, desc.MaxSize)
+			return nil, fmt.Errorf("%s: file is %d bytes, over the %d-byte limit", name, size, desc.MaxSize)
 		}
 		if !accepts(desc.Accept, f) {
-			return fmt.Errorf("%s: file type %q is not accepted (want %s)", name, f.MimeType, strings.Join(desc.Accept, ", "))
+			return nil, fmt.Errorf("%s: file type %q is not accepted (want %s)", name, f.MimeType, strings.Join(desc.Accept, ", "))
+		}
+		if sp != nil {
+			specs = append(specs, *sp)
+			continue
 		}
 		total += size
 	}
 	if total > h.cfg.MaxInlineBytes {
-		return fmt.Errorf("inline files total %d bytes, over the %d-byte limit", total, h.cfg.MaxInlineBytes)
+		return nil, fmt.Errorf("inline files total %d bytes, over the %d-byte limit", total, h.cfg.MaxInlineBytes)
 	}
-	return nil
+	return specs, nil
+}
+
+// decodeArg decodes one file argument: inline via DecodeFile, or, when
+// it qualifies for an out-of-band upload, into an UploadSpec with File
+// carrying its claimed id, name and type (no data).
+func (h *Host) decodeArg(t *tool, name string, desc FileInputDescriptor, raw json.RawMessage) (File, *UploadSpec, error) {
+	var in fileInput
+	if h.uploads != nil && t.call && json.Unmarshal(raw, &in) == nil && len(in.Data) == 0 &&
+		in.Size != nil && *in.Size > 0 && len(in.ID) >= 1 && len(in.ID) <= 128 && in.MimeType != "" {
+		sp := &UploadSpec{Tool: t.name, Param: name, FileID: in.ID, Name: in.Name, MimeType: in.MimeType,
+			Size: *in.Size, MaxSize: desc.MaxSize, Accept: desc.Accept}
+		if in.Digest != nil {
+			if in.Digest.Algorithm != "sha-256" {
+				return File{}, nil, fmt.Errorf("unsupported digest algorithm %q", in.Digest.Algorithm)
+			}
+			sp.Digest = in.Digest.Value
+		}
+		return File{ID: in.ID, Name: in.Name, MimeType: in.MimeType}, sp, nil
+	}
+	f, err := DecodeFile(raw)
+	return f, nil, err
 }
 
 // filesCapability is the extension's server settings, or nil when the
@@ -292,21 +324,32 @@ func (h *Host) filesCapability() map[string]any {
 	if h.cfg.MaxInlineBytes < 0 {
 		return nil
 	}
-	return map[string]any{"maxInlineBytes": h.cfg.MaxInlineBytes}
+	c := map[string]any{"maxInlineBytes": h.cfg.MaxInlineBytes}
+	if h.uploads != nil {
+		c["upload"] = map[string]any{}
+	}
+	return c
 }
 
 // clientDeclaresFiles reports whether a request's params declare the
-// files extension in _meta. Any settings object counts: an inline-only
-// client declares empty settings.
-func clientDeclaresFiles(params json.RawMessage) bool {
+// files extension in _meta, and whether its settings include download.
+// Any settings object counts as a declaration: an inline-only client
+// declares empty settings.
+func clientDeclaresFiles(params json.RawMessage) (declared, download bool) {
 	var p struct {
 		Meta map[string]struct {
 			Extensions map[string]json.RawMessage `json:"extensions"`
 		} `json:"_meta"`
 	}
 	if json.Unmarshal(params, &p) != nil {
-		return false
+		return false, false
 	}
 	s, ok := p.Meta[ClientCapabilitiesMeta].Extensions[FilesExtension]
-	return ok && !bytes.Equal(s, []byte("null"))
+	if !ok || bytes.Equal(s, []byte("null")) {
+		return false, false
+	}
+	var set map[string]json.RawMessage
+	_ = json.Unmarshal(s, &set)
+	d, ok := set["download"]
+	return true, ok && !bytes.Equal(d, []byte("null"))
 }

@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `mcphost`: out-of-band transfers for the files extension. `Host.SetUploads(UploadProvider)` advertises `upload`; a data-less file argument of a tool registered with the new `Host.ToolCall` gets `resultType: "upload_required"` with relay-minted https targets (`UploadTarget`: url, PUT/POST, headers, multipart `form`, `expiresAt`, `credentials: "omit"`) and an HMAC-signed `requestState` binding tool, session, canonical arguments, file ids/refs and expiry. The retry is verified (single use, carried across re-exec by `ExportTokens`/`SeedTokens`), `FinishUpload` confirms each file's size and type, and the handler gets `Call.Files`. Credential headers (`Authorization`, `Cookie`, ...) and non-https targets are refused.
+- `mcphost`: `CallHandler`/`Result.Downloads` — tools return `_meta` download targets (absolute https URLs), sent only to clients that declare `download`.
+- `command.UploadTargeter`, `command.DownloadLinker`, `command.InboundAttachment`, `Broker.SetUploadTargeter`, `Broker.SetDownloadLinker`, `Broker.UploadTargeter`, `Broker.DownloadLinker`, `Broker.PostUploaded`: optional relay capabilities; no change for relays without them.
+- `relaytool`: `send_file` accepts out-of-band uploads when the broker has an `UploadTargeter`; new `list_attachments` / `fetch_attachment` tools when it has a `DownloadLinker`. `Tool.Call` carries the full handler; `Register` uses `Host.ToolCall` and installs the upload provider.
+- `docs/files-oob.md`: wire shapes and per-platform recipes (Slack, Zulip, Poe).
+
+### Changed
+- `mcphost`: `server/discover` now answers in the SEP-2575 shape (`supportedVersions: ["2026-07-28"]`, capabilities, serverInfo in `_meta`), so clients such as fir ≥ v1.52.0 negotiate the revision the files extension requires. Previously the initialize-shaped answer made them fall back to `initialize` on 2025 revisions, where they do not use the extension at all.
+
 ## [0.44.0] - 2026-11-11
 
 ### Added

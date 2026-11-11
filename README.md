@@ -25,7 +25,7 @@ Requires Go 1.25+ (uses `os.Root` sandboxing and the `tool` go.mod directive).
 - `convo` — the shared conversation → ACP-session manager core every relay puts between its chat surface and the agent: sticky per-conversation `!model` overrides (optional persistent `Store`, lazy `ApplyModel`), a turn runner (`Serial` FIFO or `Supersede`), a race-safe in-flight registry (`Active`: `!stop`, turn-token `CancelToken`, claim-when-idle), a sheddable per-session `Queue`, a pluggable turn `Liveness`, a default `command.Controller` with relay `Hooks`, and one `Dispatch` entry (relay filters → broker → passthrough → prompt). Standard `!commands` are on by default. Relays inject a `Sink`, `Before`/`After` filters, relay-only `Extra` commands, `Sessions` (`state.Manager` satisfies it) and hooks.
 - `command` — the shared relay chat-command surface: the `!login` family and its two-call interactive-auth bridge (also used by `!mcp login <server>` to authorise OAuth MCP servers from a browser that is not on the agent host), plus `!help` / `!status` / `!model` / `!new` / `!stop` / `!schedules` over a relay-supplied `Controller`. All session controls are implemented once as exported *actions*, so the `!command` a human types and the MCP tool an agent calls run the same code.
 - `mcphost` — generic self-hosted MCP server: unix socket, reconnecting redirector subprocess, per-session token auth, MCP JSON-RPC loop. Zero consumer-specific logic. Survives a consumer that re-execs itself in place (stable socket dir, token registry carried through the environment).
-- `relaytool` — the **agent→relay loopback**: exposes the relay's own bot interface to the agent as MCP tools (`status`, `list_models`, `set_model`, `new_session`, `post`, `send_file`, `schedule`, `list_schedules`, `unschedule`) over `mcphost` + `command`.
+- `relaytool` — the **agent→relay loopback**: exposes the relay's own bot interface to the agent as MCP tools (`status`, `list_models`, `set_model`, `new_session`, `post`, `send_file`, `list_attachments`, `fetch_attachment`, `schedule`, `list_schedules`, `unschedule`) over `mcphost` + `command`.
 - `schedule` — durable, conversation-scoped scheduled prompts with depth, breadth and rate bounds, for relays that can inject a prompt out of band.
 - `statusline` — wire contract for the `dev.acp-kit.status-line/v1` ACP extension: mood/plan payload that agents emit on `session/update._meta`, plus provider-emoji and short-model-name derivation, so relays can render a compact `🏛️ opus-4.5 • steady • 2/5` status line.
 - `terminal` — agent-side ACP terminal driver: foreground exec with timeout, a bounded pool of background commands, and leak cleanup, over a narrow `Conn` interface.
@@ -56,11 +56,10 @@ A relay needs four things, in this order:
 ## Sending files to the chat (`send_file`, MCP files extension)
 
 `mcphost` implements the server side of the draft MCP extension
-[`io.modelcontextprotocol/files`](https://github.com/modelcontextprotocol/experimental-ext-file-uploads/blob/main/specification/draft/file-uploads.md),
-**inline transfers only**:
+[`io.modelcontextprotocol/files`](https://github.com/modelcontextprotocol/experimental-ext-file-uploads/blob/main/specification/draft/file-uploads.md):
 
-- `initialize` and `server/discover` advertise
-  `capabilities.extensions["io.modelcontextprotocol/files"] = {maxInlineBytes}`
+- `server/discover` (protocol `2026-07-28`) and `initialize` advertise
+  `capabilities.extensions["io.modelcontextprotocol/files"] = {maxInlineBytes, upload?}`
   (`Config.MaxInlineBytes`; 0 = 8 MiB, negative = extension off).
 - A tool whose input schema has a top-level property built with
   `mcphost.FileSchema` (`x-mcp-file`) is listed in `tools/list` only when the
@@ -70,15 +69,23 @@ A relay needs four things, in this order:
   size, `maxSize`, `accept`, `digest`, duplicate ids, inline total); a failure
   is `isError` without running the tool. Handlers get the bytes with
   `mcphost.DecodeFile`.
-- No `upload` / `upload_required` and no download targets: on stdio the spec
-  allows only `https` `url` targets, which a relay on a local socket cannot
-  issue.
+- Out-of-band transfers use the relay's own https URLs: `Host.SetUploads`
+  (an `UploadProvider`) turns data-less file arguments of `Host.ToolCall`
+  tools into `upload_required` with an HMAC-signed, single-use
+  `requestState`, and a `CallHandler` can return `Result.Downloads`. See
+  [docs/files-oob.md](docs/files-oob.md) for the wire shapes and recipes for
+  Slack, Zulip and Poe.
 
 `relaytool` builds `send_file` on it. The tool appears when the broker can
 deliver files: implement `command.FilePoster`
 (`PostFileTo(convID, command.OutFile) ([]string, error)`) on the Controller or
 the Poster, or pass one to `Broker.SetFilePoster`. The file goes to the calling
 conversation only. `Config.MaxFileBytes` sets the per-file `maxSize`.
+Implement `command.UploadTargeter` as well and large files skip the socket:
+the client uploads them to the platform and `send_file` posts the stored file.
+Implement `command.DownloadLinker` and the agent gets `list_attachments` and
+`fetch_attachment`, which hand a user's attachment to the client as an MCP
+download.
 
 ## Surviving a consumer re-exec (`mcphost`)
 
