@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-11-11
+
 ### Added
 - `mcphost`: out-of-band transfers for the files extension. `Host.SetUploads(UploadProvider)` advertises `upload`; a data-less file argument of a tool registered with the new `Host.ToolCall` gets `resultType: "upload_required"` with relay-minted https targets (`UploadTarget`: url, PUT/POST, headers, multipart `form`, `expiresAt`, `credentials: "omit"`) and an HMAC-signed `requestState` binding tool, session, canonical arguments, file ids/refs and expiry. The retry is verified (single use, carried across re-exec by `ExportTokens`/`SeedTokens`), `FinishUpload` confirms each file's size and type, and the handler gets `Call.Files`. Credential headers (`Authorization`, `Cookie`, ...) and non-https targets are refused.
 - `mcphost`: `CallHandler`/`Result.Downloads` — tools return `_meta` download targets (absolute https URLs), sent only to clients that declare `download`.
