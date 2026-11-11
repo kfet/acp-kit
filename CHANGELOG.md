@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-11-11
+
 ### Fixed
 - `mcphost`: a real client's files-extension declaration was never seen. The request `_meta` was decoded as a map of capability objects, so the string `protocolVersion` and object `clientInfo` the go-sdk sends beside `clientCapabilities` failed the whole decode: x-mcp-file tools stayed hidden and downloads were withheld from fir. `_meta` is now decoded key by key.
 - `mcphost`: `initialize` echoes the requested protocol version when it is one the Host speaks (2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05) instead of always answering 2025-06-18.
