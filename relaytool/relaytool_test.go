@@ -45,6 +45,9 @@ type loopCtrl struct {
 	armed    []schedule.Item
 	addErr   error
 	unschErr error
+	files    []command.OutFile
+	fileIDs  []string
+	fileErr  error
 }
 
 func (c *loopCtrl) PostTo(conv, text string) error {
@@ -59,6 +62,11 @@ func (c *loopCtrl) Schedule(conv, text string, at time.Time, every time.Duration
 	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every, Depth: 1}
 	c.armed = append(c.armed, it)
 	return it, nil
+}
+
+func (c *loopCtrl) PostFileTo(conv string, f command.OutFile) ([]string, error) {
+	c.files = append(c.files, f)
+	return c.fileIDs, c.fileErr
 }
 
 func (c *loopCtrl) CanSchedule() bool                { return true }
@@ -139,13 +147,13 @@ func TestCapabilityGating(t *testing.T) {
 			t.Fatalf("%s missing from the base surface: %v", n, plain)
 		}
 	}
-	for _, n := range []string{ToolPost, ToolSchedule, ToolListSchedules, ToolUnschedule} {
+	for _, n := range []string{ToolPost, ToolSchedule, ToolListSchedules, ToolUnschedule, ToolSendFile} {
 		if has(plain, n) {
 			t.Fatalf("%s advertised without the capability: %v", n, plain)
 		}
 	}
 	full := names(newTools(t, &loopCtrl{}, nil))
-	for _, n := range []string{ToolPost, ToolSchedule, ToolListSchedules, ToolUnschedule} {
+	for _, n := range []string{ToolPost, ToolSchedule, ToolListSchedules, ToolUnschedule, ToolSendFile} {
 		if !has(full, n) {
 			t.Fatalf("%s missing with the capability: %v", n, full)
 		}
@@ -453,5 +461,45 @@ func TestRekeyCarriesDeferredNewSession(t *testing.T) {
 	tools.EndTurn("x")
 	if len(c.resets) != 1 {
 		t.Fatalf("a Rekey with nothing to move armed a reset: %v", c.resets)
+	}
+}
+
+func TestSendFileTool(t *testing.T) {
+	c := &loopCtrl{}
+	tools := newTools(t, c, nil)
+	arg := `{"file":{"id":"1","name":"dir/r.txt","mimeType":"text/plain","size":2,"data":"aGk="},"caption":"here"}`
+	got, err := call(t, tools, ToolSendFile, "k", arg)
+	if err != nil || got != "Sent r.txt (2 bytes) to this conversation." {
+		t.Fatalf("got %q err %v", got, err)
+	}
+	if f := c.files[0]; f.Name != "r.txt" || string(f.Data) != "hi" || f.Caption != "here" || f.MimeType != "text/plain" {
+		t.Fatalf("file %+v", f)
+	}
+	c.fileIDs = []string{"9"}
+	if got, _ := call(t, tools, ToolSendFile, "k", arg); !strings.Contains(got, "message id(s): 9") {
+		t.Fatalf("got %q", got)
+	}
+	c.fileErr = errors.New("boom")
+	if _, err := call(t, tools, ToolSendFile, "k", arg); err == nil || err.Error() != "boom" {
+		t.Fatalf("err %v", err)
+	}
+	for _, bad := range []string{`{}`, `{"file":null}`, `{"file":"x"}`, `[`} {
+		if _, err := call(t, tools, ToolSendFile, "k", bad); err == nil {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	var schema map[string]any
+	for _, x := range tools.Tools() {
+		if x.Name == ToolSendFile {
+			schema = x.Schema
+		}
+	}
+	xf := schema["properties"].(map[string]any)["file"].(map[string]any)["x-mcp-file"].(map[string]any)
+	if xf["maxSize"] != DefaultMaxFileBytes {
+		t.Fatalf("x-mcp-file %v", xf)
+	}
+	custom := newTools(t, c, func(cfg *Config) { cfg.MaxFileBytes = 5 })
+	if custom.cfg.MaxFileBytes != 5 {
+		t.Fatal("MaxFileBytes not honoured")
 	}
 }

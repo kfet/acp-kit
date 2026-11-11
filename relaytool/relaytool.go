@@ -69,7 +69,12 @@ const (
 	ToolSchedule      = "schedule"
 	ToolListSchedules = "list_schedules"
 	ToolUnschedule    = "unschedule"
+	ToolSendFile      = "send_file"
 )
+
+// DefaultMaxFileBytes is the per-file x-mcp-file maxSize of send_file
+// when Config.MaxFileBytes is zero.
+const DefaultMaxFileBytes int64 = 8 << 20
 
 // Config configures a Tools.
 type Config struct {
@@ -88,6 +93,10 @@ type Config struct {
 	ConvToken func(sessionKey string) (convToken string, ok bool)
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
+	// MaxFileBytes is send_file's per-file maxSize. Zero means
+	// DefaultMaxFileBytes. The mcphost Host's MaxInlineBytes caps the
+	// request as a whole, so keep the two consistent.
+	MaxFileBytes int64
 }
 
 // Tool is one registered tool, kept as data so the set can be built and
@@ -118,6 +127,9 @@ func New(cfg Config) (*Tools, error) {
 	}
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
+	}
+	if cfg.MaxFileBytes == 0 {
+		cfg.MaxFileBytes = DefaultMaxFileBytes
 	}
 	return &Tools{cfg: cfg, pending: map[string]bool{}}, nil
 }
@@ -222,10 +234,54 @@ func (t *Tools) Tools() []Tool {
 		})
 	}
 
+	if t.cfg.Broker.CanPostFile() {
+		out = append(out, t.sendFileTool())
+	}
+
 	if t.cfg.Broker.CanSchedule() {
 		out = append(out, t.scheduleTools()...)
 	}
 	return out
+}
+
+// sendFileTool delivers a file into the conversation. Its `file`
+// argument carries x-mcp-file, so the CLIENT fills it from a file the
+// host can read (the model never emits the bytes), and mcphost lists
+// the tool only to clients that declared the files extension.
+func (t *Tools) sendFileTool() Tool {
+	return Tool{
+		Name: ToolSendFile,
+		Description: "Send a file into this conversation as an attachment, right now, outside the answer " +
+			"you are streaming. Use it to hand the user an artifact you produced: a report, an image, " +
+			"a log, an archive. It always sends here — there is no way to address anywhere else.",
+		Schema: objectSchemaReq(map[string]any{
+			"file": mcphost.FileSchema(mcphost.FileInputDescriptor{MaxSize: t.cfg.MaxFileBytes},
+				"The file to send."),
+			"caption": strProp("Optional text to accompany the file. Not every relay shows it."),
+		}, "file"),
+		Handler: t.wrap(func(conv string, args json.RawMessage) (string, error) {
+			var a struct {
+				File    json.RawMessage `json:"file"`
+				Caption string          `json:"caption"`
+			}
+			if err := decode(args, &a); err != nil {
+				return "", err
+			}
+			f, err := mcphost.DecodeFile(a.File)
+			if err != nil {
+				return "", err
+			}
+			ids, err := t.cfg.Broker.PostFile(conv, command.OutFile{Name: f.Name, MimeType: f.MimeType, Data: f.Data, Caption: a.Caption})
+			if err != nil {
+				return "", err
+			}
+			msg := fmt.Sprintf("Sent %s (%d bytes) to this conversation", command.SafeFileName(f.Name), len(f.Data))
+			if len(ids) > 0 {
+				msg += " as message id(s): " + strings.Join(ids, ", ")
+			}
+			return msg + ".", nil
+		}),
+	}
 }
 
 // scheduleTools is the scheduling trio.

@@ -237,8 +237,9 @@ type Broker struct {
 	a    Authenticator
 	ctrl Controller // optional; set via SetController for session commands
 
-	post  Poster    // optional; see SetPoster
-	sched Scheduler // optional; see SetScheduler
+	post     Poster     // optional; see SetPoster
+	sched    Scheduler  // optional; see SetScheduler
+	filePost FilePoster // optional; see SetFilePoster
 
 	extraHelp []string // relay-added !help bullets, see AddHelp
 

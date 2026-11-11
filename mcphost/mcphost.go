@@ -123,6 +123,14 @@ type Config struct {
 	// and per-session token to the spawned redirector. Required.
 	EnvSocket string
 	EnvToken  string
+
+	// MaxInlineBytes is the maxInlineBytes the Host advertises for the
+	// io.modelcontextprotocol/files extension (see files.go): the
+	// largest total decoded size of inline file arguments it accepts in
+	// one request. Zero means DefaultMaxInlineBytes. Negative switches
+	// the extension off: it is not advertised, tools with x-mcp-file
+	// arguments are never listed, and file arguments are refused.
+	MaxInlineBytes int64
 }
 
 // Host owns the unix socket, the token→sessionKey registry, the set of
@@ -154,6 +162,7 @@ type tool struct {
 	description string
 	inputSchema map[string]any
 	handler     Handler
+	files       map[string]FileInputDescriptor // x-mcp-file arguments
 }
 
 // osExecutable is os.Executable, indirected for tests to exercise the
@@ -188,6 +197,9 @@ func New(cfg Config) (*Host, error) {
 	}
 	if cfg.ServerInfoVersion == "" {
 		cfg.ServerInfoVersion = "1"
+	}
+	if cfg.MaxInlineBytes == 0 {
+		cfg.MaxInlineBytes = DefaultMaxInlineBytes
 	}
 	if cfg.RedirCommand == "" {
 		exe, err := osExecutable()
@@ -246,11 +258,13 @@ func socketDir(cfg Config) (dir string, ownDir bool, err error) {
 }
 
 // Tool registers a tool by name with its JSON input schema and handler.
-// Registration order is preserved in tools/list. Registering the same
+// Registration order is preserved in tools/list. A schema with a
+// top-level x-mcp-file argument makes it a file tool; see files.go. Registering the same
 // name twice replaces the earlier entry in place. Not safe to call
 // concurrently with the accept loop; register all tools before Listen.
 func (h *Host) Tool(name, description string, inputSchema map[string]any, handler Handler) {
-	t := &tool{name: name, description: description, inputSchema: inputSchema, handler: handler}
+	t := &tool{name: name, description: description, inputSchema: inputSchema, handler: handler,
+		files: fileParams(inputSchema)}
 	if _, exists := h.tools[name]; !exists {
 		h.toolsIn = append(h.toolsIn, t)
 	} else {

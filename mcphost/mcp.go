@@ -83,14 +83,17 @@ func (h *Host) handleLine(line []byte, enc *json.Encoder, sessionKey string) err
 	}
 	resp := rpcMessage{JSONRPC: "2.0", ID: msg.ID}
 	switch msg.Method {
-	case "initialize":
+	case "initialize", "server/discover":
+		// server/discover is where the files extension says servers
+		// advertise it; initialize carries the same capabilities for
+		// clients still on the initialize handshake.
 		resp.Result = map[string]any{
 			"protocolVersion": mcpProtocolVersion,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    h.capabilities(),
 			"serverInfo":      map[string]any{"name": h.cfg.ServerInfoName, "version": h.cfg.ServerInfoVersion},
 		}
 	case "tools/list":
-		resp.Result = map[string]any{"tools": h.toolSpecs()}
+		resp.Result = map[string]any{"tools": h.toolSpecs(clientDeclaresFiles(msg.Params))}
 	case "tools/call":
 		resp.Result = h.handleToolCall(msg.Params, sessionKey)
 	case "ping":
@@ -101,11 +104,25 @@ func (h *Host) handleLine(line []byte, enc *json.Encoder, sessionKey string) err
 	return enc.Encode(&resp)
 }
 
+// capabilities is the server capabilities object.
+func (h *Host) capabilities() map[string]any {
+	c := map[string]any{"tools": map[string]any{}}
+	if fc := h.filesCapability(); fc != nil {
+		c["extensions"] = map[string]any{FilesExtension: fc}
+	}
+	return c
+}
+
 // toolSpecs returns the JSON-RPC tool specs advertised to the agent, in
-// registration order.
-func (h *Host) toolSpecs() []any {
+// registration order. Tools with x-mcp-file arguments are omitted unless
+// the client declared the files extension and it is switched on.
+func (h *Host) toolSpecs(files bool) []any {
+	files = files && h.filesCapability() != nil
 	specs := make([]any, 0, len(h.toolsIn))
 	for _, t := range h.toolsIn {
+		if len(t.files) > 0 && !files {
+			continue
+		}
 		specs = append(specs, map[string]any{
 			"name":        t.name,
 			"description": t.description,
@@ -126,6 +143,9 @@ func (h *Host) handleToolCall(params json.RawMessage, sessionKey string) map[str
 	t, ok := h.tools[p.Name]
 	if !ok {
 		return toolError("unknown tool: " + p.Name)
+	}
+	if err := h.checkFiles(t, p.Arguments); err != nil {
+		return toolError(err.Error())
 	}
 	text, err := t.handler(sessionKey, p.Arguments)
 	if err != nil {
