@@ -24,3 +24,8 @@ ownership really is exclusive).
 Not urgent: the state-dir move in v0.14.0 means new versions no longer
 land in `$TMPDIR` at all, so the blast radius shrinks with every host
 that updates.
+
+- mcphost redir: while the host is down and the proxy is redialling
+  (holding p.mu, up to redirGiveUp=30s), an agent closing stdin is not
+  noticed, so the redirector lingers until the agent's terminate grace
+  kills it. Found by interop/TestHostRestart; harmless but slow.

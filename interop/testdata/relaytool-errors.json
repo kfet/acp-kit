@@ -1,0 +1,148 @@
+[
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {},
+      "name": "set_model"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "model_id is required",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "in": "soon",
+        "text": "x"
+      },
+      "name": "schedule"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "in: time: invalid duration \"soon\"",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {},
+      "name": "fetch_attachment"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "id is required: get one from list_attachments",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "file": {
+          "data": "aGk=",
+          "id": "f",
+          "mimeType": "text/plain",
+          "size": 3
+        }
+      },
+      "name": "send_file"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "file: file size 3 does not match 2 decoded bytes",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  }
+]

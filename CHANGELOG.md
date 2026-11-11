@@ -8,6 +8,13 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Fixed
+- `mcphost`: a real client's files-extension declaration was never seen. The request `_meta` was decoded as a map of capability objects, so the string `protocolVersion` and object `clientInfo` the go-sdk sends beside `clientCapabilities` failed the whole decode: x-mcp-file tools stayed hidden and downloads were withheld from fir. `_meta` is now decoded key by key.
+- `mcphost`: `initialize` echoes the requested protocol version when it is one the Host speaks (2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05) instead of always answering 2025-06-18.
+
+### Added
+- `interop`: test-only package driving mcphost and every relaytool tool with the real `modelcontextprotocol/go-sdk` client (fir's pinned v1.8.0) through a real redirector subprocess: no-silent-fallback guard, negotiation on every SDK protocol version, tools/list + tools/call for each tool (fails if a new tool has no case), errors, upload_required retry, downloads, host restart, golden wire transcripts (`go test ./interop -update`) and draft-spec shape checks.
+
 ## [0.45.0] - 2026-11-11
 
 ### Added

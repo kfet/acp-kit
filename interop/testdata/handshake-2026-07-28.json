@@ -1,0 +1,83 @@
+[
+  {
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    "result": {
+      "_meta": {
+        "io.modelcontextprotocol/serverInfo": {
+          "name": "interop",
+          "version": "1.2.3"
+        }
+      },
+      "capabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/files": {
+            "maxInlineBytes": 8388608
+          }
+        },
+        "tools": {}
+      },
+      "supportedVersions": [
+        "2026-07-28"
+      ]
+    }
+  },
+  {
+    "method": "ping",
+    "result": {}
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "a": 1
+      },
+      "name": "echo"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "echo {\"a\":1}",
+          "type": "text"
+        }
+      ]
+    }
+  }
+]

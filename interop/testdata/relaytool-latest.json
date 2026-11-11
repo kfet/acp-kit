@@ -1,0 +1,636 @@
+[
+  {
+    "method": "tools/list",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    },
+    "result": {
+      "tools": [
+        {
+          "description": "Report this conversation's relay status: current model, session, working directory, relay version and uptime, and how many prompts are scheduled here.",
+          "inputSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "status"
+        },
+        {
+          "description": "List the models the agent process can switch to, optionally filtered by substring.",
+          "inputSchema": {
+            "properties": {
+              "filter": {
+                "description": "Case-insensitive substring to narrow the list. Omit for all models.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "list_models"
+        },
+        {
+          "description": "Switch this conversation to a different model. Takes effect from the next turn, not the one running now.",
+          "inputSchema": {
+            "properties": {
+              "model_id": {
+                "description": "Exact model id, as returned by list_models.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "model_id"
+            ],
+            "type": "object"
+          },
+          "name": "set_model"
+        },
+        {
+          "description": "Clear this conversation's context and start a fresh session. DEFERRED: it is applied once the current turn ends, so this turn finishes normally and the next one starts clean.",
+          "inputSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "new_session"
+        },
+        {
+          "description": "Send a message into this conversation right now, outside the answer you are streaming. Use it for progress on a long task, or to report a result that arrives after the turn that started it has ended. When the relay knows them, the result gives the posted message id(s). It always posts here — there is no way to address anywhere else.",
+          "inputSchema": {
+            "properties": {
+              "text": {
+                "description": "Message body, in the chat's markdown.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          },
+          "name": "post"
+        },
+        {
+          "description": "Send a file into this conversation as an attachment, right now, outside the answer you are streaming. Use it to hand the user an artifact you produced: a report, an image, a log, an archive. It always sends here — there is no way to address anywhere else.",
+          "inputSchema": {
+            "properties": {
+              "caption": {
+                "description": "Optional text to accompany the file. Not every relay shows it.",
+                "type": "string"
+              },
+              "file": {
+                "description": "The file to send.",
+                "properties": {
+                  "data": {
+                    "type": "string"
+                  },
+                  "digest": {
+                    "properties": {
+                      "algorithm": {
+                        "const": "sha-256"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "algorithm",
+                      "value"
+                    ],
+                    "type": "object"
+                  },
+                  "id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "mimeType": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "size": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id",
+                  "mimeType",
+                  "size"
+                ],
+                "type": "object",
+                "x-mcp-file": {
+                  "maxSize": 8388608
+                }
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "type": "object"
+          },
+          "name": "send_file"
+        },
+        {
+          "description": "List files users attached in this conversation, newest first, with the id fetch_attachment takes.",
+          "inputSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "list_attachments"
+        },
+        {
+          "description": "Download a file a user attached in this conversation, by the id list_attachments gives. The file is saved locally and its path reported in the result.",
+          "inputSchema": {
+            "properties": {
+              "id": {
+                "description": "Attachment id from list_attachments.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "name": "fetch_attachment"
+        },
+        {
+          "description": "Schedule a prompt to be sent to you later IN THIS CONVERSATION, with its full history. On fire it starts a normal turn whose answer is posted here. Use it for conversation-scoped follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores. Your turn ends when you stop writing, and nothing wakes you again by itself. So when you intend to come back to a task later, or to check on a subagent, a build, or any job you started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, so the future turn can act without guessing.",
+          "inputSchema": {
+            "properties": {
+              "at": {
+                "description": "Absolute RFC3339 time, e.g. \"2026-09-02T09:00:00Z\". Use this or in.",
+                "type": "string"
+              },
+              "every": {
+                "description": "Optional repeat interval as a Go duration, e.g. \"24h\". Omit for one-shot.",
+                "type": "string"
+              },
+              "in": {
+                "description": "Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at.",
+                "type": "string"
+              },
+              "text": {
+                "description": "The prompt to send yourself when it fires.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          },
+          "name": "schedule"
+        },
+        {
+          "description": "List the prompts scheduled in this conversation, soonest first.",
+          "inputSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "name": "list_schedules"
+        },
+        {
+          "description": "Cancel a scheduled prompt in this conversation by id.",
+          "inputSchema": {
+            "properties": {
+              "id": {
+                "description": "Schedule id, as returned by schedule or list_schedules.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "name": "unschedule"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": null,
+      "name": "status"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "**Status**\n\n- model: `m1`\n- session: active\n- models available: 0\n- relay: `test`\n- uptime: 1h\n- active conversations: 0\n",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "filter": "two"
+      },
+      "name": "list_models"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "1 model(s) match \"two\" (current: `m1`):\n\n- `m2`\n",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "model_id": "m2"
+      },
+      "name": "set_model"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Model set to m2 for this conversation, from the next turn.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": null,
+      "name": "new_session"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "A fresh session is armed: this turn finishes as usual, then the context is cleared.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "text": "hello chat"
+      },
+      "name": "post"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Posted to this conversation.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "caption": "c",
+        "file": {
+          "data": "aGk=",
+          "digest": {
+            "algorithm": "sha-256",
+            "value": "j0NDRmSPa5bfid2pAcUXaxCm2Dlh3TwayItZstwyeqQ"
+          },
+          "id": "f1",
+          "mimeType": "text/plain",
+          "name": "a.txt",
+          "size": 2
+        }
+      },
+      "name": "send_file"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Sent a.txt (2 bytes) to this conversation as message id(s): msg-file.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": null,
+      "name": "list_attachments"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Attachments in this conversation, newest first (id, name, type, size):\n- a1: report.txt (text/plain, 5 bytes)",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "id": "a1"
+      },
+      "name": "fetch_attachment"
+    },
+    "result": {
+      "_meta": {
+        "io.modelcontextprotocol/files": {
+          "downloads": [
+            {
+              "credentials": "omit",
+              "digest": {
+                "algorithm": "sha-256",
+                "value": "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+              },
+              "expiresAt": "2030-01-02T03:04:05Z",
+              "mimeType": "text/plain",
+              "name": "report.txt",
+              "size": 5,
+              "url": "https://downloads.example/a1"
+            }
+          ]
+        }
+      },
+      "content": [
+        {
+          "text": "Attachment report.txt (5 bytes) is ready to download.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "at": "2030-01-02T03:04:05Z",
+        "text": "wake up"
+      },
+      "name": "schedule"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Scheduled s01 for 2030-01-02T03:04:05Z.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": null,
+      "name": "list_schedules"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "**Scheduled here** (1) — `!unschedule \u003cid\u003e` cancels one:\n\n- `s01` — 2030-01-02 03:04 UTC\n  wake up\n",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "id": "s01"
+      },
+      "name": "unschedule"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Cancelled s01.",
+          "type": "text"
+        }
+      ]
+    }
+  }
+]

@@ -336,15 +336,22 @@ func (h *Host) filesCapability() map[string]any {
 // Any settings object counts as a declaration: an inline-only client
 // declares empty settings.
 func clientDeclaresFiles(params json.RawMessage) (declared, download bool) {
+	// _meta is decoded key by key: it also carries members of other
+	// shapes (a real client sends protocolVersion as a string and
+	// clientInfo as an object), which must not spoil the one we read.
 	var p struct {
-		Meta map[string]struct {
-			Extensions map[string]json.RawMessage `json:"extensions"`
-		} `json:"_meta"`
+		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return false, false
 	}
-	s, ok := p.Meta[ClientCapabilitiesMeta].Extensions[FilesExtension]
+	var cc struct {
+		Extensions map[string]json.RawMessage `json:"extensions"`
+	}
+	if json.Unmarshal(p.Meta[ClientCapabilitiesMeta], &cc) != nil {
+		return false, false
+	}
+	s, ok := cc.Extensions[FilesExtension]
 	if !ok || bytes.Equal(s, []byte("null")) {
 		return false, false
 	}

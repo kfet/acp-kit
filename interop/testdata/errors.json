@@ -1,0 +1,93 @@
+[
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {},
+      "name": "nope"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "unknown tool: nope",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  },
+  {
+    "error": "method not found: prompts/list",
+    "method": "prompts/list",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {},
+      "name": "echo"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "echo {}",
+          "type": "text"
+        }
+      ]
+    }
+  }
+]

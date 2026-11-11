@@ -1,0 +1,64 @@
+[
+  {
+    "method": "initialize",
+    "params": {
+      "capabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/files": {
+            "download": {},
+            "upload": {}
+          }
+        },
+        "roots": {
+          "listChanged": true
+        }
+      },
+      "clientInfo": {
+        "name": "fir",
+        "version": "dev"
+      },
+      "protocolVersion": "2025-03-26"
+    },
+    "result": {
+      "capabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/files": {
+            "maxInlineBytes": 8388608
+          }
+        },
+        "tools": {}
+      },
+      "protocolVersion": "2025-03-26",
+      "serverInfo": {
+        "name": "interop",
+        "version": "1.2.3"
+      }
+    }
+  },
+  {
+    "method": "notifications/initialized",
+    "notification": true,
+    "params": {}
+  },
+  {
+    "method": "ping",
+    "result": {}
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "arguments": {
+        "a": 1
+      },
+      "name": "echo"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "echo {\"a\":1}",
+          "type": "text"
+        }
+      ]
+    }
+  }
+]

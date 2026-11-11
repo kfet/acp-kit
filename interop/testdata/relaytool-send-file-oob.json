@@ -1,0 +1,130 @@
+[
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "file": {
+          "id": "f2",
+          "mimeType": "text/plain",
+          "name": "big.txt",
+          "size": 42
+        }
+      },
+      "name": "send_file"
+    },
+    "result": {
+      "requestState": "\u003crequestState\u003e",
+      "resultType": "upload_required",
+      "uploads": [
+        {
+          "credentials": "omit",
+          "expiresAt": "2030-01-02T03:04:05Z",
+          "fileId": "f2",
+          "method": "PUT",
+          "url": "https://uploads.example/u/f2"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "file": {
+          "id": "f2",
+          "mimeType": "text/plain",
+          "name": "big.txt",
+          "size": 42
+        }
+      },
+      "name": "send_file",
+      "requestState": "\u003crequestState\u003e"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "Sent big.txt (42 bytes) to this conversation as message id(s): msg-up.",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  {
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "extensions": {
+            "io.modelcontextprotocol/files": {
+              "download": {},
+              "upload": {}
+            }
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "fir",
+          "version": "dev"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      },
+      "arguments": {
+        "file": {
+          "id": "f2",
+          "mimeType": "text/plain",
+          "name": "big.txt",
+          "size": 42
+        }
+      },
+      "name": "send_file",
+      "requestState": "\u003crequestState\u003e"
+    },
+    "result": {
+      "content": [
+        {
+          "text": "requestState was already used; send the file again",
+          "type": "text"
+        }
+      ],
+      "isError": true
+    }
+  }
+]

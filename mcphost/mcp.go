@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"slices"
 )
 
 // handle reads the preamble, authenticates the token, then runs the MCP
@@ -53,6 +54,24 @@ const (
 	statelessProtocolVersion = "2026-07-28"
 	serverInfoMeta           = "io.modelcontextprotocol/serverInfo"
 )
+
+// legacyProtocolVersions are the initialize-handshake revisions the Host
+// speaks. A client requesting one of them gets it echoed back, as the
+// spec requires of a server that supports the requested version; any
+// other request gets mcpProtocolVersion.
+var legacyProtocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+
+// initializeVersion picks the protocol version to answer initialize with.
+func initializeVersion(params json.RawMessage) string {
+	var p struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	_ = json.Unmarshal(params, &p)
+	if slices.Contains(legacyProtocolVersions, p.ProtocolVersion) {
+		return p.ProtocolVersion
+	}
+	return mcpProtocolVersion
+}
 
 // runMCP runs the MCP server loop over r/w until r hits EOF. Each
 // tools/call is dispatched to a registered handler with sessionKey bound.
@@ -104,7 +123,7 @@ func (h *Host) handleLine(line []byte, enc *json.Encoder, sessionKey string) err
 	case "initialize":
 		// The legacy handshake carries the same capabilities.
 		resp.Result = map[string]any{
-			"protocolVersion": mcpProtocolVersion,
+			"protocolVersion": initializeVersion(msg.Params),
 			"capabilities":    h.capabilities(),
 			"serverInfo":      map[string]any{"name": h.cfg.ServerInfoName, "version": h.cfg.ServerInfoVersion},
 		}
