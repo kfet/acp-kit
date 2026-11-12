@@ -74,6 +74,9 @@ type Config struct {
 	// MinConf (0-9) is the confidence a verdict needs to act; 0 means
 	// DefaultMinConf.
 	MinConf int `json:"min_conf" yaml:"min_conf"`
+	// Logf, when set, receives a line for each exchange the agent
+	// refused, so a fallback to cancel-and-reprompt is never silent.
+	Logf func(format string, args ...any) `json:"-" yaml:"-"`
 }
 
 // Agent is the agent surface used. *client.AgentProc satisfies it.
@@ -102,6 +105,7 @@ type Reply struct {
 type Interjector struct {
 	agent   Agent
 	minConf int
+	logf    func(format string, args ...any)
 
 	mu   sync.Mutex
 	side map[string]*side
@@ -122,7 +126,11 @@ func New(agent Agent, cfg Config) *Interjector {
 	if mc <= 0 {
 		mc = DefaultMinConf
 	}
-	return &Interjector{agent: agent, minConf: mc, side: map[string]*side{}}
+	logf := cfg.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return &Interjector{agent: agent, minConf: mc, logf: logf, side: map[string]*side{}}
 }
 
 // Instruction is the rule appended to every fork prompt.
@@ -178,15 +186,18 @@ func (i *Interjector) Ask(ctx context.Context, conv, cwd string, parent acp.Sess
 
 // deliver sends the exchange to parent via SteerMethod and reports
 // whether the agent accepted it. Any error (e.g. no running turn) means
-// not delivered.
+// not delivered; it is logged, because the caller then falls back.
 func (i *Interjector) deliver(ctx context.Context, parent, fork acp.SessionId, q, qa string, r Reply) bool {
 	p := map[string]any{"mode": "record", "question": q, "answer": r.Text, "forkSessionId": string(fork)}
 	if r.Action == Inform {
 		p = map[string]any{"mode": "steer", "prompt": []acp.ContentBlock{acp.TextBlock(
 			"[while you were working, the user asked and a side branch answered]\n" + qa)}}
 	}
-	_, err := i.agent.ExtMethod(ctx, parent, SteerMethod, p)
-	return err == nil
+	if _, err := i.agent.ExtMethod(ctx, parent, SteerMethod, p); err != nil {
+		i.logf("interject: %s %s to %s refused: %v", SteerMethod, p["mode"], parent, err)
+		return false
+	}
+	return true
 }
 
 func (i *Interjector) sideOf(conv string) *side {

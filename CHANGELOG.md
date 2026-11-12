@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `interject.Config.Logf`: a refused `_fir/session/steer` call is now logged with its mode, session and error. Before, the error was dropped and the relay fell back to cancel-and-reprompt with no trace.
+- `interject` e2e test against a real fir binary (`FIR_BIN`, build tag `e2e`): a main turn longer than fir's idle TTL must take a steer (inform) or a record (none) without a cancel.
+
 ## [0.49.0] - 2026-11-12
 
 ### Changed

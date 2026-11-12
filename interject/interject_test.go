@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -127,7 +128,8 @@ func TestAskFallback(t *testing.T) {
 
 func TestAskNative(t *testing.T) {
 	f := &fake{steer: true, out: "a\n1 9"}
-	ij := New(f, Config{Enabled: true})
+	var logs []string
+	ij := New(f, Config{Enabled: true, Logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }})
 	r, _ := ij.Ask(context.Background(), "c", "/", "main", "q")
 	if !r.Delivered || f.ext[0]["mode"] != "record" || f.ext[0]["question"] != "q" || f.ext[0]["answer"] != "a" || f.ext[0]["forkSessionId"] != "fork" {
 		t.Fatal(r, f.ext)
@@ -148,6 +150,9 @@ func TestAskNative(t *testing.T) {
 	r, _ = ij.Ask(context.Background(), "c", "/", "main", "q3")
 	if r.Delivered || !strings.Contains(ij.Take("c"), "Q: q3") {
 		t.Fatal(r)
+	}
+	if len(logs) != 1 || logs[0] != "interject: _fir/session/steer steer to main refused: -32002" {
+		t.Fatalf("logs = %q", logs)
 	}
 }
 
