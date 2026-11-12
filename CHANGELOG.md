@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-11
+
 ### Added
 - `client`: `Caps.CloseSession` (from `sessionCapabilities.close`) and `AgentProc.CloseSession`, which sends `session/close` when advertised and falls back to fir's `session/release`.
 
