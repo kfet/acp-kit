@@ -8,6 +8,12 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `client`: `Caps.CloseSession` (from `sessionCapabilities.close`) and `AgentProc.CloseSession`, which sends `session/close` when advertised and falls back to fir's `session/release`.
+
+### Fixed
+- `state`: idle GC now closes each stale session on the agent (best-effort, 5s timeout) before dropping it, so the agent frees per-session extension/MCP processes instead of holding them until its own TTL.
+
 ## [0.46.0] - 2026-11-11
 
 ### Fixed

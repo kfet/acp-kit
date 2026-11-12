@@ -495,3 +495,51 @@ func TestResetSkipsResumeOnce(t *testing.T) {
 		t.Fatalf("resume tier restored = %s", s.SessionID)
 	}
 }
+
+// closingAgent is a fakeAgent that also implements SessionCloser.
+type closingAgent struct {
+	fakeAgent
+	closeErr error
+	closes   []acp.SessionId
+	order    []string
+	deadline bool
+}
+
+func (c *closingAgent) CloseSession(ctx context.Context, sid acp.SessionId) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, c.deadline = ctx.Deadline()
+	c.closes = append(c.closes, sid)
+	c.order = append(c.order, "close")
+	return c.closeErr
+}
+
+func (c *closingAgent) DropSession(sid acp.SessionId) {
+	c.mu.Lock()
+	c.order = append(c.order, "drop")
+	c.mu.Unlock()
+	c.fakeAgent.DropSession(sid)
+}
+
+var _ SessionCloser = (*client.AgentProc)(nil)
+
+func TestGCClosesBeforeDrop(t *testing.T) {
+	for _, closeErr := range []error{nil, errors.New("unsupported")} {
+		ag := &closingAgent{closeErr: closeErr}
+		m := newManagerT(t, Config{Agent: ag, IdleTimeout: time.Millisecond})
+		s, _ := m.GetOrCreate(context.Background(), "conv1", stubSink{})
+		m.mu.Lock()
+		s.lastUsed = time.Now().Add(-time.Hour)
+		m.mu.Unlock()
+		m.GCOnce()
+		if len(ag.closes) != 1 || ag.closes[0] != s.SessionID {
+			t.Fatalf("closes = %v", ag.closes)
+		}
+		if !ag.deadline {
+			t.Fatal("CloseSession ctx has no deadline")
+		}
+		if len(ag.order) != 2 || ag.order[0] != "close" || ag.order[1] != "drop" {
+			t.Fatalf("order = %v", ag.order)
+		}
+	}
+}

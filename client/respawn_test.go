@@ -629,8 +629,10 @@ func TestFinishedAgentFailsEveryCall(t *testing.T) {
 	close(done)
 	a.mu.Lock()
 	a.cur = &gen{done: done, err: ErrAgentClosed}
+	a.caps.CloseSession = true
 	a.mu.Unlock()
 	errs := []error{
+		a.CloseSession(ctx, "s"),
 		a.SetModel(ctx, "s", "m"),
 		a.SetConfigOption(ctx, "s", "c", "v"),
 		a.ReleaseSession(ctx, "s"),

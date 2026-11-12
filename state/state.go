@@ -264,7 +264,20 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// SessionCloser is optionally implemented by an Agent (as *client.AgentProc
+// does) to free an agent-side session's resources. GCOnce calls it,
+// best-effort, before dropping a stale session.
+type SessionCloser interface {
+	CloseSession(ctx context.Context, sid acp.SessionId) error
+}
+
+// gcCloseTimeout bounds each best-effort CloseSession call made by GCOnce.
+const gcCloseTimeout = 5 * time.Second
+
 // GCOnce drops stale in-memory sessions and leaves their cwd dirs intact.
+// When the Agent implements SessionCloser, each stale session is first
+// closed on the agent (errors are logged and ignored) so the agent can
+// free its per-session subprocesses.
 func (m *Manager) GCOnce() {
 	cutoff := time.Now().Add(-m.cfg.IdleTimeout)
 	m.mu.Lock()
@@ -278,6 +291,13 @@ func (m *Manager) GCOnce() {
 	m.mu.Unlock()
 	for _, s := range stale {
 		kitlog.Debugf("state: GC session %s (%s); cwd %s retained", s.SessionID, s.Key, s.Cwd)
+		if c, ok := m.cfg.Agent.(SessionCloser); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), gcCloseTimeout)
+			if err := c.CloseSession(ctx, s.SessionID); err != nil {
+				kitlog.Debugf("state: GC close session %s: %v", s.SessionID, err)
+			}
+			cancel()
+		}
 		m.cfg.Agent.DropSession(s.SessionID)
 	}
 }

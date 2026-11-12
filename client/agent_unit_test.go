@@ -930,3 +930,56 @@ func TestPromptCancelWaitsForAgentToUnwind(t *testing.T) {
 		t.Fatal("Prompt returned before the agent unwound")
 	}
 }
+
+func TestCloseSessionPicksMethod(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		caps map[string]any
+		want string
+	}{
+		{"close", map[string]any{"sessionCapabilities": map[string]any{"close": map[string]any{}}}, acp.AgentMethodSessionClose},
+		{"release", map[string]any{}, "session/release"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			var mu sync.Mutex
+			h := func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+				switch method {
+				case acp.AgentMethodInitialize:
+					return map[string]any{"protocolVersion": acp.ProtocolVersionNumber, "agentCapabilities": tc.caps}, nil
+				case acp.AgentMethodSessionClose, "session/release":
+					mu.Lock()
+					got = append(got, method)
+					mu.Unlock()
+					return map[string]any{}, nil
+				}
+				return nil, acp.NewMethodNotFound(method)
+			}
+			pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, h)
+			if err := pc.agent.CloseSession(context.Background(), "s1"); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("methods = %v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCloseSessionNotFound(t *testing.T) {
+	h := func(_ context.Context, method string, _ json.RawMessage) (any, *acp.RequestError) {
+		switch method {
+		case acp.AgentMethodInitialize:
+			return map[string]any{"protocolVersion": acp.ProtocolVersionNumber, "agentCapabilities": map[string]any{"sessionCapabilities": map[string]any{"close": map[string]any{}}}}, nil
+		case acp.AgentMethodSessionClose:
+			return nil, &acp.RequestError{Code: SessionNotFoundCode, Message: "Session not found"}
+		}
+		return nil, acp.NewMethodNotFound(method)
+	}
+	pc := startPaired(t, Config{Command: []string{"x"}, Policy: PermissionFunc(AllowAllPermissions)}, h)
+	if err := pc.agent.CloseSession(context.Background(), "ghost"); !IsSessionNotFound(err) {
+		t.Fatalf("err = %v", err)
+	}
+}

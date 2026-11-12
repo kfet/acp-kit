@@ -66,6 +66,9 @@ type Caps struct {
 	// ForkAt reflects agentCapabilities.sessionCapabilities.fork._meta.at:
 	// session/fork honours a `_meta.at` entry id choosing the fork point.
 	ForkAt bool
+	// CloseSession reflects agentCapabilities.sessionCapabilities.close:
+	// the agent implements the standard session/close RPC.
+	CloseSession bool
 	// EmbeddedContext reflects
 	// agentCapabilities.promptCapabilities.embeddedContext: when true,
 	// the relay may emit ContentBlock::Resource (with TextResourceContents)
@@ -372,6 +375,7 @@ func parseCaps(raw json.RawMessage) Caps {
 			SessionCapabilities struct {
 				List   *json.RawMessage `json:"list"`
 				Resume *json.RawMessage `json:"resume"`
+				Close  *json.RawMessage `json:"close"`
 				Fork   *struct {
 					Meta map[string]json.RawMessage `json:"_meta"`
 				} `json:"fork"`
@@ -414,6 +418,7 @@ func parseCaps(raw json.RawMessage) Caps {
 		ResumeSession:        env.AgentCapabilities.SessionCapabilities.Resume != nil,
 		ForkSession:          fork != nil,
 		ForkAt:               fork != nil && fork.Meta["at"] != nil,
+		CloseSession:         env.AgentCapabilities.SessionCapabilities.Close != nil,
 		EmbeddedContext:      env.AgentCapabilities.PromptCapabilities.EmbeddedContext,
 		Image:                env.AgentCapabilities.PromptCapabilities.Image,
 		Audio:                env.AgentCapabilities.PromptCapabilities.Audio,
@@ -604,6 +609,24 @@ func (a *AgentProc) ReleaseSession(ctx context.Context, sid acp.SessionId) error
 		return err
 	}
 	_, err = rpc[json.RawMessage](ctx, g, "session/release", releaseSessionRequest{
+		SessionId: wire,
+	})
+	return err
+}
+
+// CloseSession asks the agent to free an in-memory session's resources
+// (extension/MCP subprocesses). It uses the standard session/close RPC
+// when the agent advertises sessionCapabilities.close, otherwise fir's
+// unstable session/release. The on-disk session is left intact.
+func (a *AgentProc) CloseSession(ctx context.Context, sid acp.SessionId) error {
+	if !a.Caps().CloseSession {
+		return a.ReleaseSession(ctx, sid)
+	}
+	g, wire, err := a.peek(ctx, sid)
+	if err != nil {
+		return err
+	}
+	_, err = rpc[json.RawMessage](ctx, g, acp.AgentMethodSessionClose, acp.CloseSessionRequest{
 		SessionId: wire,
 	})
 	return err
