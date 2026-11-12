@@ -2,6 +2,7 @@ package interject
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -11,10 +12,12 @@ import (
 )
 
 type fake struct {
-	forkErr, promptErr error
-	out                string
-	prompts            []string
-	closed             []acp.SessionId
+	forkErr, promptErr, extErr error
+	steer                      bool
+	out                        string
+	prompts                    []string
+	closed                     []acp.SessionId
+	ext                        []map[string]any
 }
 
 func (f *fake) ForkSession(_ context.Context, _ string, _ acp.SessionId, _ string, sink client.SessionUpdateSink) (acp.SessionId, error) {
@@ -36,12 +39,27 @@ func (f *fake) CloseSession(_ context.Context, sid acp.SessionId) error {
 	return nil
 }
 
+func (f *fake) Caps() client.Caps {
+	if !f.steer {
+		return client.Caps{}
+	}
+	return client.Caps{Extensions: map[string]json.RawMessage{SteerCap: json.RawMessage(`{}`)}}
+}
+
+func (f *fake) ExtMethod(_ context.Context, sid acp.SessionId, method string, p map[string]any) (json.RawMessage, error) {
+	if sid != "main" || method != SteerMethod {
+		panic("bad ext call")
+	}
+	f.ext = append(f.ext, p)
+	return nil, f.extErr
+}
+
 func TestNewDisabled(t *testing.T) {
 	if New(&fake{}, Config{}) != nil || New(nil, Config{Enabled: true}) != nil {
 		t.Fatal("want nil")
 	}
 	var ij *Interjector
-	if ij.Take("c") != "" || ij.Queued("c") {
+	if ij.Take("c") != "" {
 		t.Fatal("nil receiver")
 	}
 	if New(&fake{}, Config{Enabled: true, MinConf: 3}).minConf != 3 {
@@ -52,71 +70,84 @@ func TestNewDisabled(t *testing.T) {
 func TestParse(t *testing.T) {
 	cases := []struct {
 		in   string
-		body string
-		act  Action
-		conf int
+		want Reply
 	}{
-		{"hello\n2 8", "hello", Queue, 8},
-		{"hello\n2 x", "hello\n2 x", None, -1},
-		{"hello\n5 8", "hello\n5 8", None, -1},
-		{"hello", "hello", None, -1},
-		{"3 9", "", Steer, 9},
+		{"hello\n2 8", Reply{Text: "hello", Action: Inform, Conf: 8}},
+		{"hello\nNOTE:  check x \n2 8", Reply{Text: "hello", Note: "check x", Action: Inform, Conf: 8}},
+		{"NOTE: n\n1 9", Reply{Note: "n", Action: None, Conf: 9}},
+		{"hello\n2 x", Reply{Text: "hello\n2 x", Action: None, Conf: -1}},
+		{"hello\n4 8", Reply{Text: "hello\n4 8", Action: None, Conf: -1}},
+		{"hello", Reply{Text: "hello", Action: None, Conf: -1}},
+		{"3 9", Reply{Action: Abort, Conf: 9}},
 	}
 	for _, c := range cases {
-		b, a, n := Parse(c.in)
-		if b != c.body || a != c.act || n != c.conf {
-			t.Errorf("%q: %q %v %d", c.in, b, a, n)
+		if r := Parse(c.in); r != c.want {
+			t.Errorf("%q: %+v", c.in, r)
 		}
 	}
 }
 
 func TestActionString(t *testing.T) {
-	for a, w := range map[Action]string{None: "answered", Queue: "queued", Steer: "steering", Abort: "stopping"} {
+	for a, w := range map[Action]string{None: "answered", Inform: "told main", Abort: "stopping"} {
 		if a.String() != w {
 			t.Error(a)
 		}
 	}
-	if (Reply{Action: Queue}).Tag() != "*(quick reply · queued)*" {
+	if (Reply{Action: Inform}).Tag() != "*(quick reply · told main)*" {
 		t.Error("tag")
 	}
 }
 
-func TestAskFlow(t *testing.T) {
-	f := &fake{out: "it is 4\n2 8"}
+func TestAskFallback(t *testing.T) {
+	f := &fake{out: "it is 4\nNOTE: hi\n2 8"}
 	ij := New(f, Config{Enabled: true})
 	r, err := ij.Ask(context.Background(), "c", "/", "main", "what is 2+2")
-	if err != nil || r.Text != "it is 4" || r.Action != Queue || r.Conf != 8 {
+	if err != nil || r.Text != "it is 4" || r.Note != "hi" || r.Action != Inform || r.Conf != 8 || r.Delivered {
 		t.Fatal(r, err)
 	}
-	if len(f.closed) != 1 || !ij.Queued("c") {
-		t.Fatal("close/queued")
+	if len(f.closed) != 1 || len(f.ext) != 0 {
+		t.Fatal("close/ext")
 	}
-	f.out = "maybe\n4 3" // low conf → None
+	f.out = "maybe\nNOTE: x\n3 3" // low conf → None, note dropped
 	r, _ = ij.Ask(context.Background(), "c", "/", "main", "stop?")
-	if r.Action != None {
+	if r.Action != None || r.Note != "" {
 		t.Fatal(r)
 	}
-	if !strings.Contains(f.prompts[1], "[earlier side Q&A this turn]\nQ: what is 2+2\nA: it is 4") {
+	if !strings.Contains(f.prompts[1], "[earlier side Q&A this turn]\nQ: what is 2+2\nA: it is 4\nNote from the side branch: hi") {
 		t.Fatal(f.prompts[1])
 	}
 	p := ij.Take("c")
-	if !strings.Contains(p, "Q: stop?\nA: maybe") || !strings.Contains(p, "[queued messages from the user]\nwhat is 2+2") {
+	if !strings.Contains(p, "Q: stop?\nA: maybe") || !strings.Contains(p, "Q: what is 2+2") {
 		t.Fatal(p)
 	}
-	if ij.Take("c") != "" || ij.Queued("c") {
+	if ij.Take("c") != "" {
 		t.Fatal("not reset")
 	}
 }
 
-func TestTakeQAOnly(t *testing.T) {
-	ij := New(&fake{out: "a\n1 9"}, Config{Enabled: true})
-	_, _ = ij.Ask(context.Background(), "c", "/", "m", "q")
-	if p := ij.Take("c"); strings.Contains(p, "queued") || !strings.Contains(p, "Q: q") {
-		t.Fatal(p)
+func TestAskNative(t *testing.T) {
+	f := &fake{steer: true, out: "a\n1 9"}
+	ij := New(f, Config{Enabled: true})
+	r, _ := ij.Ask(context.Background(), "c", "/", "main", "q")
+	if !r.Delivered || f.ext[0]["mode"] != "record" || f.ext[0]["question"] != "q" || f.ext[0]["answer"] != "a" || f.ext[0]["forkSessionId"] != "fork" {
+		t.Fatal(r, f.ext)
 	}
-	ij.side["d"] = &side{queued: []string{"x"}}
-	if p := ij.Take("d"); strings.Contains(p, "side branch") {
-		t.Fatal(p)
+	f.out = "b\nNOTE: n\n2 9"
+	r, _ = ij.Ask(context.Background(), "c", "/", "main", "q2")
+	pr := f.ext[1]["prompt"].([]acp.ContentBlock)[0].Text.Text
+	if !r.Delivered || f.ext[1]["mode"] != "steer" || !strings.Contains(pr, "Q: q2\nA: b\nNote from the side branch: n") {
+		t.Fatal(r, pr)
+	}
+	if !strings.Contains(f.prompts[1], "Q: q\nA: a") {
+		t.Fatal("fork context")
+	}
+	if ij.Take("c") != "" {
+		t.Fatal("delivered must not be in Take")
+	}
+	f.extErr = errors.New("-32002")
+	r, _ = ij.Ask(context.Background(), "c", "/", "main", "q3")
+	if r.Delivered || !strings.Contains(ij.Take("c"), "Q: q3") {
+		t.Fatal(r)
 	}
 }
 
@@ -132,7 +163,7 @@ func TestAskErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	ij = New(&fake{out: "3 9"}, Config{Enabled: true})
-	if r, err := ij.Ask(context.Background(), "c", "/", "m", "q"); err != nil || r.Action != Steer {
+	if r, err := ij.Ask(context.Background(), "c", "/", "m", "q"); err != nil || r.Action != Abort {
 		t.Fatal(r, err)
 	}
 	ij = New(&fake{out: "  "}, Config{Enabled: true})
