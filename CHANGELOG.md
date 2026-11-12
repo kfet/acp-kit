@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-12
+
 ### Changed
 - `interject` (breaking): three actions — `None`, `Inform`, `Abort` (`Queue`/`Steer` and `Queued` removed). The fork may add a `NOTE:` line before the `ACTION CONF` verdict (`Reply.Note`). When the agent advertises `dev.fir.steer/v1`, `Ask` delivers natively via `_fir/session/steer`: None/Abort as a `record` side_query entry the LLM never sees, Inform as a mid-turn `steer` with the Q&A and note; `Reply.Delivered` reports it. Otherwise (or when no turn is running) the exchange stays in the `Take` digest and an undelivered Inform is the relay's to handle (cancel + re-prompt). `Agent` now also needs `Caps` and `ExtMethod`.
 
