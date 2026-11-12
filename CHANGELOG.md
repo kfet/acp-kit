@@ -8,6 +8,9 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Added
+- `interject`: mid-turn quick replies. `Interjector.Ask` forks the running main session, asks the new message with a two-number verdict line (`ACTION CONF`: none/queue/steer/abort), closes the fork and keeps the side Q&A; `Take` returns the digest plus queued messages as a prefix for the next main prompt. Opt-in via `Config{Enabled, MinConf}`.
+
 ## [0.47.0] - 2026-11-11
 
 ### Added
