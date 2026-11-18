@@ -390,7 +390,10 @@ type capsCtl struct{ posted []string }
 
 func (c *capsCtl) PostTo(conv, text string) error { c.posted = append(c.posted, text); return nil }
 func (c *capsCtl) CanSchedule() bool              { return true }
-func (c *capsCtl) Schedule(string, string, time.Time, time.Duration) (schedule.Item, error) {
+func (c *capsCtl) Retime(string, string, time.Time, time.Duration, schedule.Budget) (schedule.Item, error) {
+	return schedule.Item{}, nil
+}
+func (c *capsCtl) Schedule(string, string, time.Time, time.Duration, schedule.Budget) (schedule.Item, error) {
 	return schedule.Item{}, nil
 }
 func (c *capsCtl) Schedules(string) []schedule.Item { return nil }

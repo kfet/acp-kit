@@ -51,10 +51,15 @@ func (r *relay) PostTo(_, text string) error {
 	return nil
 }
 func (r *relay) CanSchedule() bool { return true }
-func (r *relay) Schedule(conv, text string, at time.Time, every time.Duration) (schedule.Item, error) {
+func (r *relay) Retime(conv, id string, at time.Time, every time.Duration, _ schedule.Budget) (schedule.Item, error) {
+	return schedule.Item{ID: id, Conv: conv, At: at, Every: every}, nil
+}
+
+func (r *relay) Schedule(conv, text string, at time.Time, every time.Duration, _ schedule.Budget) (schedule.Item, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every, Depth: 1}
+	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every,
+		Until: at.Add(schedule.DefaultUntil), MaxFires: schedule.DefaultMaxFires}
 	r.armed = append(r.armed, it)
 	return it, nil
 }

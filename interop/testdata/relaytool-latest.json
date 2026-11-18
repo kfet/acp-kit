@@ -172,7 +172,7 @@
           "name": "fetch_attachment"
         },
         {
-          "description": "Schedule a prompt to be sent to you later IN THIS CONVERSATION, with its full history. On fire it starts a normal turn whose answer is posted here. Use it for conversation-scoped follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores. Your turn ends when you stop writing, and nothing wakes you again by itself. So when you intend to come back to a task later, or to check on a subagent, a build, or any job you started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, so the future turn can act without guessing.",
+          "description": "Schedule a prompt to be sent to you later IN THIS CONVERSATION, with its full history. On fire it starts a normal turn whose answer is posted here. Use it for conversation-scoped follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores. Your turn ends when you stop writing, and nothing wakes you again by itself. So when you intend to come back to a task later, or to check on a subagent, a build, or any job you started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, so the future turn can act without guessing. To wait for something, use ONE repeating schedule (every) whose text states the exit condition; when it is not met yet, answer silently and leave it running — do not chain one-shots. Every schedule has a budget (until, max_fires; default 24h / 20 fires) and is removed when either is spent or after 3 silent fires in a row. A scheduled turn cannot extend its budget; pass id to re-time its own schedule instead.",
           "inputSchema": {
             "properties": {
               "at": {
@@ -183,18 +183,27 @@
                 "description": "Optional repeat interval as a Go duration, e.g. \"24h\". Omit for one-shot.",
                 "type": "string"
               },
+              "id": {
+                "description": "Optional id of an armed schedule to re-time instead of arming a new one (text is then ignored).",
+                "type": "string"
+              },
               "in": {
                 "description": "Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at.",
                 "type": "string"
               },
+              "max_fires": {
+                "description": "Optional budget: how many times it may fire. Default 20.",
+                "type": "integer"
+              },
               "text": {
                 "description": "The prompt to send yourself when it fires.",
                 "type": "string"
+              },
+              "until": {
+                "description": "Optional budget deadline: a Go duration from now (\"6h\") or RFC3339 time. Default 24h, at most 7 days.",
+                "type": "string"
               }
             },
-            "required": [
-              "text"
-            ],
             "type": "object"
           },
           "name": "schedule"
@@ -559,7 +568,7 @@
     "result": {
       "content": [
         {
-          "text": "Scheduled s01 for 2030-01-02T03:04:05Z.",
+          "text": "Scheduled s01 for 2030-01-02T03:04:05Z; budget 20 fires until 2030-01-03T03:04:05Z.",
           "type": "text"
         }
       ]
@@ -592,7 +601,7 @@
     "result": {
       "content": [
         {
-          "text": "**Scheduled here** (1) — `!unschedule \u003cid\u003e` cancels one:\n\n- `s01` — 2030-01-02 03:04 UTC\n  wake up\n",
+          "text": "**Scheduled here** (1) — `!unschedule \u003cid\u003e` cancels one:\n\n- `s01` — 2030-01-02 03:04 UTC; budget: 20 fires left, until 2030-01-03 03:04 UTC\n  wake up\n",
           "type": "text"
         }
       ]

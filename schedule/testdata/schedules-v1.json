@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "s8ac70213",
+      "conv": "c\u000019\u0000Scheduled check redesign: depth limit vs runaway repeats",
+      "text": "Backstop for schedule-budgets ship. Check fir session 'schedule-budgets' (observe_session id_prefix=schedule-budgets): status, and whether acp-kit and zulip-acp new releases exist (git -C ~/src/acp-kit log -3; git -C ~/src/zulip-acp log -3) and ~/.config/zulip-acp/state/schedules.json is in the new format with all 4 old items present. Report the outcome to the user briefly. If it is still running, say where it is. If it has died, say so and what is left.",
+      "at": "2026-11-18T06:05:27.376408125Z",
+      "depth": 1,
+      "created": "2026-11-18T03:05:27.376411962Z"
+    },
+    {
+      "id": "s85d53c82",
+      "conv": "c\u000019\u0000hpbox upgrade to Ubuntu 26.04",
+      "text": "RAM delivery check. Fetch Canada Post tracking 4013252475895168 via: curl -s https://r.jina.ai/https://www.canadapost-postescanada.ca/track-reperage/en/details/4013252475895168 (direct curl and curl_cffi get 403). Report the status in one line. If delivered, propose a time for the Zulip downtime to install the RAM in hpbox.",
+      "at": "2026-11-19T21:00:00Z",
+      "depth": 1,
+      "created": "2026-11-12T03:13:46.506168818Z"
+    },
+    {
+      "id": "s0764dee8",
+      "conv": "c\u000019\u0000hpbox upgrade to Ubuntu 26.04",
+      "text": "Black Friday check (early deals). Read ~/sync/shared/docs/notes/user.md first. Re-price for delivery to West Van V7T, CAD, using ~/sync/shared/scripts/shop (Amazon/Newegg via fetch.py, Best Buy API, eBay s.sh): (1) 512GB-1TB microSD from a known brand (baseline Kingston Canvas Select Plus 512GB C$126 Best Buy, Samsung EVO Select 1TB C$340); (2) 1TB M.2 2280 NVMe (baseline Crucial T500 C$162 eBay). Report only real drops below baseline, with direct links. Also ask whether the SK Hynix RAM (ETA Nov 9-16) arrived.",
+      "at": "2026-11-20T17:00:00Z",
+      "depth": 1,
+      "created": "2026-11-08T01:31:57.765099863Z"
+    },
+    {
+      "id": "s080973aa",
+      "conv": "c\u000019\u0000Agent memory redesign: fir traces as recall corpus",
+      "text": "One-week autoMark check on hpbox. Count `auto:` bookmarks in ~/.config/fir/sessions since the ship date, sample ~20 for false marks and verbatim quality, and estimate hook cost (llm usage). Ask the advisor whether to widen autoMark to other hosts and whether notes can start retiring. Report here.",
+      "at": "2026-11-23T16:19:45.621508932Z",
+      "depth": 1,
+      "created": "2026-11-16T16:19:45.621512919Z"
+    },
+    {
+      "id": "s2f585980",
+      "conv": "c\u000019\u0000hpbox upgrade to Ubuntu 26.04",
+      "text": "Black Friday day check. Same as the Nov 20 check: read user.md, re-price microSD 512GB/1TB and 1TB NVMe for delivery to V7T in CAD (baselines: Kingston 512GB C$126, Samsung EVO Select 1TB C$340, Crucial T500 1TB C$162). Post the best 3 deals with direct links. If none beat baseline, say so in one line.",
+      "at": "2026-11-27T17:00:00Z",
+      "depth": 1,
+      "created": "2026-11-08T01:31:57.769432397Z"
+    }
+  ]
+}

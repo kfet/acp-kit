@@ -57,6 +57,7 @@ import (
 
 	"github.com/kfet/acp-kit/command"
 	"github.com/kfet/acp-kit/mcphost"
+	"github.com/kfet/acp-kit/schedule"
 )
 
 // Tool names exposed to the agent.
@@ -273,19 +274,30 @@ func (t *Tools) scheduleTools() []Tool {
 			"Your turn ends when you stop writing, and nothing wakes you again by itself. So when you " +
 			"intend to come back to a task later, or to check on a subagent, a build, or any job you " +
 			"started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, " +
-			"so the future turn can act without guessing.",
-		Schema: objectSchemaReq(map[string]any{
-			"text":  strProp("The prompt to send yourself when it fires."),
-			"in":    strProp("Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at."),
-			"at":    strProp("Absolute RFC3339 time, e.g. \"2026-09-02T09:00:00Z\". Use this or in."),
-			"every": strProp("Optional repeat interval as a Go duration, e.g. \"24h\". Omit for one-shot."),
-		}, "text"),
+			"so the future turn can act without guessing. To wait for something, use ONE repeating " +
+			"schedule (every) whose text states the exit condition; when it is not met yet, answer " +
+			"silently and leave it running — do not chain one-shots. Every schedule has a budget " +
+			"(until, max_fires; default 24h / 20 fires) and is removed when either is spent or after " +
+			"3 silent fires in a row. A scheduled turn cannot extend its budget; pass id to re-time " +
+			"its own schedule instead.",
+		Schema: objectSchema(map[string]any{
+			"text":      strProp("The prompt to send yourself when it fires."),
+			"in":        strProp("Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at."),
+			"at":        strProp("Absolute RFC3339 time, e.g. \"2026-09-02T09:00:00Z\". Use this or in."),
+			"every":     strProp("Optional repeat interval as a Go duration, e.g. \"24h\". Omit for one-shot."),
+			"until":     strProp("Optional budget deadline: a Go duration from now (\"6h\") or RFC3339 time. Default 24h, at most 7 days."),
+			"max_fires": map[string]any{"type": "integer", "description": "Optional budget: how many times it may fire. Default 20."},
+			"id":        strProp("Optional id of an armed schedule to re-time instead of arming a new one (text is then ignored)."),
+		}),
 		Handler: t.wrap(func(conv string, args json.RawMessage) (string, error) {
 			var a struct {
-				Text  string `json:"text"`
-				In    string `json:"in"`
-				At    string `json:"at"`
-				Every string `json:"every"`
+				Text     string `json:"text"`
+				In       string `json:"in"`
+				At       string `json:"at"`
+				Every    string `json:"every"`
+				Until    string `json:"until"`
+				MaxFires int    `json:"max_fires"`
+				ID       string `json:"id"`
 			}
 			if err := decode(args, &a); err != nil {
 				return "", err
@@ -300,14 +312,28 @@ func (t *Tools) scheduleTools() []Tool {
 					return "", fmt.Errorf("every: %w", err)
 				}
 			}
-			it, err := t.cfg.Broker.Schedule(conv, strings.TrimSpace(a.Text), at, every)
+			bud := schedule.Budget{MaxFires: a.MaxFires}
+			if a.Until != "" {
+				if bud.Until, err = parseUntil(a.Until); err != nil {
+					return "", err
+				}
+			}
+			var it schedule.Item
+			verb := "Scheduled"
+			if a.ID != "" {
+				verb = "Re-timed"
+				it, err = t.cfg.Broker.Retime(conv, a.ID, at, every, bud)
+			} else {
+				it, err = t.cfg.Broker.Schedule(conv, strings.TrimSpace(a.Text), at, every, bud)
+			}
 			if err != nil {
 				return "", err
 			}
-			msg := fmt.Sprintf("Scheduled %s for %s", it.ID, it.At.UTC().Format(time.RFC3339))
+			msg := fmt.Sprintf("%s %s for %s", verb, it.ID, it.At.UTC().Format(time.RFC3339))
 			if it.Every > 0 {
 				msg += ", repeating every " + it.Every.String()
 			}
+			msg += fmt.Sprintf("; budget %d fires until %s", it.FiresLeft(), it.Until.UTC().Format(time.RFC3339))
 			return msg + ".", nil
 		}),
 	}, {
@@ -418,6 +444,19 @@ func parseWhen(in, at string) (time.Time, error) {
 	default:
 		return time.Time{}, errors.New("pass in (a duration) or at (an RFC3339 time)")
 	}
+}
+
+// parseUntil reads a budget deadline: a duration from now, or an
+// RFC3339 time.
+func parseUntil(s string) (time.Time, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return time.Now().Add(d), nil
+	}
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("until: want a duration or an RFC3339 time, got %q", s)
+	}
+	return ts, nil
 }
 
 // decode unmarshals a tool's arguments, turning a decode failure into

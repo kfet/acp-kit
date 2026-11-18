@@ -43,6 +43,8 @@ type loopCtrl struct {
 	posted   [][2]string
 	postErr  error
 	armed    []schedule.Item
+	budget   schedule.Budget
+	retimed  []string
 	addErr   error
 	unschErr error
 	files    []command.OutFile
@@ -55,11 +57,21 @@ func (c *loopCtrl) PostTo(conv, text string) error {
 	return c.postErr
 }
 
-func (c *loopCtrl) Schedule(conv, text string, at time.Time, every time.Duration) (schedule.Item, error) {
+func (c *loopCtrl) Retime(conv, id string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
 	if c.addErr != nil {
 		return schedule.Item{}, c.addErr
 	}
-	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every, Depth: 1}
+	c.retimed = append(c.retimed, id)
+	c.budget = b
+	return schedule.Item{ID: id, Conv: conv, At: at, Every: every}, nil
+}
+
+func (c *loopCtrl) Schedule(conv, text string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
+	c.budget = b
+	if c.addErr != nil {
+		return schedule.Item{}, c.addErr
+	}
+	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every}
 	c.armed = append(c.armed, it)
 	return it, nil
 }
@@ -324,6 +336,20 @@ func TestScheduleTool(t *testing.T) {
 	}
 	if _, err := call(t, tools, ToolSchedule, "conv", `{"text":"x","in":"90m"}`); err != nil {
 		t.Fatalf("relative schedule: %v", err)
+	}
+	got, err = call(t, tools, ToolSchedule, "conv", `{"text":"x","in":"1h","until":"6h","max_fires":3}`)
+	if err != nil || c.budget.MaxFires != 3 || time.Until(c.budget.Until) < 5*time.Hour || !strings.Contains(got, "budget") {
+		t.Fatalf("budget by duration: %q %+v %v", got, c.budget, err)
+	}
+	if _, err := call(t, tools, ToolSchedule, "conv", `{"text":"x","in":"1h","until":"2026-09-03T09:00:00Z"}`); err != nil || !c.budget.Until.Equal(time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)) {
+		t.Fatalf("budget by time: %+v %v", c.budget, err)
+	}
+	if _, err := call(t, tools, ToolSchedule, "conv", `{"text":"x","in":"1h","until":"whenever"}`); err == nil {
+		t.Fatal("want error for an unparsable until")
+	}
+	got, err = call(t, tools, ToolSchedule, "conv", `{"id":"s07","in":"1h","every":"2h"}`)
+	if err != nil || !strings.HasPrefix(got, "Re-timed s07") || len(c.retimed) != 1 {
+		t.Fatalf("retime: %q %v", got, err)
 	}
 
 	c.addErr = errors.New("cap reached")

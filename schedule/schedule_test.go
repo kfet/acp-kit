@@ -47,7 +47,9 @@ type harness struct {
 	fired []Item
 	logs  []string
 
-	fire func(context.Context, Item) error
+	fire   func(context.Context, Item) error
+	result Result
+	stops  []string
 }
 
 func newHarness(t *testing.T, tweak func(*Config)) *harness {
@@ -62,15 +64,21 @@ func newHarness(t *testing.T, tweak func(*Config)) *harness {
 		Path:  h.path,
 		Ticks: h.ticks,
 		Now:   h.clock.now,
-		Fire: func(ctx context.Context, it Item) error {
+		Fire: func(ctx context.Context, it Item) (Result, error) {
 			h.mu.Lock()
 			h.fired = append(h.fired, it)
 			f := h.fire
+			res := h.result
 			h.mu.Unlock()
 			if f != nil {
-				return f(ctx, it)
+				return res, f(ctx, it)
 			}
-			return nil
+			return res, nil
+		},
+		Stopped: func(it Item, why Stop) {
+			h.mu.Lock()
+			h.stops = append(h.stops, string(why)+":"+it.ID)
+			h.mu.Unlock()
 		},
 		Logf: func(format string, args ...any) {
 			h.mu.Lock()
@@ -127,11 +135,11 @@ func TestOpenRequiresPathAndFire(t *testing.T) {
 }
 
 func TestOpenDefaults(t *testing.T) {
-	s, err := Open(Config{Path: filepath.Join(t.TempDir(), "s.json"), Fire: func(context.Context, Item) error { return nil }})
+	s, err := Open(Config{Path: filepath.Join(t.TempDir(), "s.json"), Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if s.cfg.MaxDepth != DefaultMaxDepth || s.cfg.MaxPerConv != DefaultMaxPerConv ||
+	if s.cfg.DefaultUntil != DefaultUntil || s.cfg.DefaultMaxFires != DefaultMaxFires || s.cfg.MaxPerConv != DefaultMaxPerConv ||
 		s.cfg.MaxTotal != DefaultMaxTotal || s.cfg.MinInterval != DefaultMinInterval || s.cfg.Tick != DefaultTick {
 		t.Fatalf("defaults not applied: %+v", s.cfg)
 	}
@@ -151,7 +159,7 @@ func TestOpenReadError(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "s.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Open(Config{Path: filepath.Join(dir, "s.json"), Fire: func(context.Context, Item) error { return nil }})
+	_, err := Open(Config{Path: filepath.Join(dir, "s.json"), Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }})
 	if err == nil {
 		t.Fatal("want read error")
 	}
@@ -162,7 +170,7 @@ func TestOpenCorruptFileIsAnError(t *testing.T) {
 	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(Config{Path: p, Fire: func(context.Context, Item) error { return nil }}); err == nil {
+	if _, err := Open(Config{Path: p, Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }}); err == nil {
 		t.Fatal("want parse error")
 	}
 }
@@ -187,7 +195,7 @@ func TestAddValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := h.store.Add(tc.conv, tc.text, tc.at, tc.every); err == nil {
+			if _, err := h.store.Add(tc.conv, tc.text, tc.at, tc.every, Budget{}); err == nil {
 				t.Fatal("want error")
 			}
 		})
@@ -196,19 +204,19 @@ func TestAddValidation(t *testing.T) {
 
 func TestAddPersistsAndLists(t *testing.T) {
 	h := newHarness(t, nil)
-	a, err := h.store.Add("conv-1", "later", epoch.Add(2*time.Hour), 0)
+	a, err := h.store.Add("conv-1", "later", epoch.Add(2*time.Hour), 0, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	b, err := h.store.Add("conv-1", "sooner", epoch.Add(time.Hour), time.Hour)
+	b, err := h.store.Add("conv-1", "sooner", epoch.Add(time.Hour), time.Hour, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := h.store.Add("conv-2", "elsewhere", epoch.Add(time.Hour), 0); err != nil {
+	if _, err := h.store.Add("conv-2", "elsewhere", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if a.Depth != 1 || b.Depth != 1 {
-		t.Fatalf("want depth 1, got %d/%d", a.Depth, b.Depth)
+	if a.MaxFires != DefaultMaxFires || !b.Until.Equal(epoch.Add(DefaultUntil)) {
+		t.Fatalf("want default budget, got %+v / %+v", a, b)
 	}
 
 	got := h.store.List("conv-1")
@@ -220,7 +228,7 @@ func TestAddPersistsAndLists(t *testing.T) {
 	}
 
 	// Reopen: the file round-trips, repeat interval included.
-	re, err := Open(Config{Path: h.path, Fire: func(context.Context, Item) error { return nil }, Now: h.clock.now})
+	re, err := Open(Config{Path: h.path, Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }, Now: h.clock.now})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -242,24 +250,24 @@ func TestAddCaps(t *testing.T) {
 	t.Run("per conv", func(t *testing.T) {
 		h := newHarness(t, func(c *Config) { c.MaxPerConv = 2 })
 		for i := 0; i < 2; i++ {
-			if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0); err != nil {
+			if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 				t.Fatalf("Add %d: %v", i, err)
 			}
 		}
-		if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0); err == nil {
+		if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{}); err == nil {
 			t.Fatal("want per-conv cap error")
 		}
 		// A different conversation is unaffected.
-		if _, err := h.store.Add("other", "x", epoch.Add(time.Hour), 0); err != nil {
+		if _, err := h.store.Add("other", "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 			t.Fatalf("other conv: %v", err)
 		}
 	})
 	t.Run("total", func(t *testing.T) {
 		h := newHarness(t, func(c *Config) { c.MaxTotal = 1 })
-		if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0); err != nil {
+		if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		if _, err := h.store.Add("d", "x", epoch.Add(time.Hour), 0); err == nil {
+		if _, err := h.store.Add("d", "x", epoch.Add(time.Hour), 0, Budget{}); err == nil {
 			t.Fatal("want total cap error")
 		}
 	})
@@ -274,7 +282,7 @@ func TestAddCommitFailureUndoes(t *testing.T) {
 	if err := os.WriteFile(filepath.Dir(h.path), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0); err == nil {
+	if _, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{}); err == nil {
 		t.Fatal("want save error")
 	}
 	if got := h.store.List(""); len(got) != 0 {
@@ -284,7 +292,7 @@ func TestAddCommitFailureUndoes(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	h := newHarness(t, nil)
-	it, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0)
+	it, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -305,7 +313,7 @@ func TestRemove(t *testing.T) {
 
 func TestRemoveCommitFailureRestores(t *testing.T) {
 	h := newHarness(t, nil)
-	it, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0)
+	it, err := h.store.Add("c", "x", epoch.Add(time.Hour), 0, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -327,7 +335,7 @@ func TestFireOneShot(t *testing.T) {
 	h := newHarness(t, nil)
 	fired := make(chan struct{})
 	h.fire = func(context.Context, Item) error { close(fired); return nil }
-	it, err := h.store.Add("c", "ping", epoch.Add(time.Minute), 0)
+	it, err := h.store.Add("c", "ping", epoch.Add(time.Minute), 0, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -352,7 +360,7 @@ func TestFireRepeatRearms(t *testing.T) {
 	h := newHarness(t, nil)
 	fired := make(chan Item, 4)
 	h.fire = func(_ context.Context, it Item) error { fired <- it; return nil }
-	if _, err := h.store.Add("c", "ping", epoch.Add(time.Minute), time.Hour); err != nil {
+	if _, err := h.store.Add("c", "ping", epoch.Add(time.Minute), time.Hour, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	h.run()
@@ -388,7 +396,7 @@ func TestFireErrorIsLogged(t *testing.T) {
 	h := newHarness(t, nil)
 	done := make(chan struct{})
 	h.fire = func(context.Context, Item) error { close(done); return errors.New("boom") }
-	if _, err := h.store.Add("c", "ping", epoch, 0); err != nil {
+	if _, err := h.store.Add("c", "ping", epoch, 0, Budget{}); err != nil {
 		// epoch is not in the past relative to itself, so this is fine.
 		t.Fatalf("Add: %v", err)
 	}
@@ -408,7 +416,7 @@ func TestFireGoneRemovesItem(t *testing.T) {
 	h := newHarness(t, nil)
 	done := make(chan struct{})
 	h.fire = func(context.Context, Item) error { close(done); return ErrGone }
-	if _, err := h.store.Add("c", "ping", epoch, time.Hour); err != nil {
+	if _, err := h.store.Add("c", "ping", epoch, time.Hour, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	h.run()
@@ -421,16 +429,15 @@ func TestFireGoneRemovesItem(t *testing.T) {
 	}
 }
 
-func TestFireGoneRemoveFailureIsLogged(t *testing.T) {
+func TestFireGonePersistFailureIsLogged(t *testing.T) {
 	h := newHarness(t, nil)
 	done := make(chan struct{})
 	h.fire = func(context.Context, Item) error {
-		// Remove the item first, so the store's own removal fails.
-		_ = h.store.Remove("", h.store.List("")[0].ID)
+		breakDir(t, h.path)
 		close(done)
 		return ErrGone
 	}
-	if _, err := h.store.Add("c", "ping", epoch, time.Hour); err != nil {
+	if _, err := h.store.Add("c", "ping", epoch, time.Hour, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	h.run()
@@ -440,16 +447,40 @@ func TestFireGoneRemoveFailureIsLogged(t *testing.T) {
 	<-h.done
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.logs) < 2 {
-		t.Fatalf("want both the failure and the drop logged, got %v", h.logs)
+	if !hasLog(h.logs, "schedule: persisting after fire: %v") {
+		t.Fatalf("want the persist failure logged, got %v", h.logs)
 	}
+	if len(h.store.items) != 1 {
+		t.Fatal("a failed removal must be undone")
+	}
+}
+
+// breakDir replaces the store's directory with a file so every save
+// fails.
+func breakDir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Dir(path), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasLog(logs []string, want string) bool {
+	for _, l := range logs {
+		if l == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDuePersistFailureStillFires(t *testing.T) {
 	h := newHarness(t, nil)
 	done := make(chan struct{})
 	h.fire = func(context.Context, Item) error { close(done); return nil }
-	if _, err := h.store.Add("c", "ping", epoch, 0); err != nil {
+	if _, err := h.store.Add("c", "ping", epoch, 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Break the path AFTER arming, so only the post-claim save fails.
@@ -471,90 +502,10 @@ func TestDuePersistFailureStillFires(t *testing.T) {
 	}
 }
 
-// TestDepthCapStopsRunaway is the money test: a scheduled turn that
-// schedules another must terminate.
-func TestDepthCapStopsRunaway(t *testing.T) {
-	h := newHarness(t, func(c *Config) { c.MaxDepth = 2 })
-	var (
-		mu     sync.Mutex
-		depths []int
-		errs   []error
-	)
-	fired := make(chan struct{}, 8)
-	h.fire = func(_ context.Context, it Item) error {
-		mu.Lock()
-		depths = append(depths, it.Depth)
-		mu.Unlock()
-		// Every scheduled turn tries to schedule another one.
-		_, err := h.store.Add(it.Conv, "again", h.clock.now().Add(time.Minute), 0)
-		mu.Lock()
-		errs = append(errs, err)
-		mu.Unlock()
-		fired <- struct{}{}
-		return nil
-	}
-	if _, err := h.store.Add("c", "start", epoch, 0); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	h.run()
-
-	// Fire depth 1: it arms a depth-2 child.
-	h.tick()
-	<-fired
-	// Fire depth 2: its attempt to arm a depth-3 child must be refused.
-	h.clock.advance(2 * time.Minute)
-	h.tick()
-	<-fired
-	h.clock.advance(2 * time.Minute)
-	h.tick()
-
-	h.cancel()
-	<-h.done
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(depths) != 2 || depths[0] != 1 || depths[1] != 2 {
-		t.Fatalf("depths = %v, want [1 2]", depths)
-	}
-	if errs[0] != nil {
-		t.Fatalf("depth-2 child refused: %v", errs[0])
-	}
-	if errs[1] == nil {
-		t.Fatal("depth-3 child was allowed — recursion is unbounded")
-	}
-	if got := h.store.List(""); len(got) != 0 {
-		t.Fatalf("chain did not terminate: %+v", got)
-	}
-}
-
-func TestFiringTracksConcurrentFires(t *testing.T) {
-	h := newHarness(t, nil)
-	// Two fires, same conversation, different depths, both running.
-	s := h.store
-	one, two := &firing{conv: "c", depth: 1}, &firing{conv: "c", depth: 2}
-	s.firing[one], s.firing[two] = struct{}{}, struct{}{}
-	if got := s.parentDepthLocked("c"); got != 2 {
-		t.Fatalf("parentDepth = %d, want 2", got)
-	}
-	if got := s.parentDepthLocked("other"); got != 0 {
-		t.Fatalf("parentDepth(other) = %d, want 0", got)
-	}
-	s.endFire(two)
-	if got := s.parentDepthLocked("c"); got != 1 {
-		t.Fatalf("parentDepth after end = %d, want 1", got)
-	}
-	s.endFire(one)
-	if len(s.firing) != 0 {
-		t.Fatal("ended fires were not cleaned up")
-	}
-	// Ending something that is not there is a no-op, not a panic.
-	s.endFire(one)
-}
-
 func TestRekeyMovesItems(t *testing.T) {
 	h := newHarness(t, nil)
 	for _, c := range []string{"a", "a", "b"} {
-		if _, err := h.store.Add(c, "x", epoch.Add(time.Hour), 0); err != nil {
+		if _, err := h.store.Add(c, "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -572,7 +523,7 @@ func TestRekeyMovesItems(t *testing.T) {
 		t.Fatalf("an unrelated conversation moved: %+v", got)
 	}
 	// The move is on disk.
-	s2, err := Open(Config{Path: h.path, Fire: func(context.Context, Item) error { return nil }})
+	s2, err := Open(Config{Path: h.path, Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -583,7 +534,7 @@ func TestRekeyMovesItems(t *testing.T) {
 
 func TestRekeyNoOps(t *testing.T) {
 	h := newHarness(t, nil)
-	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0); err != nil {
+	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	for _, c := range [][2]string{{"a", "a"}, {"", "a"}, {"a", ""}, {"none", "z"}} {
@@ -598,10 +549,10 @@ func TestRekeyNoOps(t *testing.T) {
 
 func TestRekeyCommitFailureUndoes(t *testing.T) {
 	h := newHarness(t, nil)
-	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0); err != nil {
+	if _, err := h.store.Add("a", "x", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	f := &firing{conv: "a", depth: 1}
+	f := &firing{conv: "a", id: "p", left: 1}
 	h.store.firing[f] = struct{}{}
 	// Replace the parent dir with a file so MkdirAll fails.
 	if err := os.RemoveAll(filepath.Dir(h.path)); err != nil {
@@ -621,10 +572,10 @@ func TestRekeyCommitFailureUndoes(t *testing.T) {
 	}
 }
 
-// TestRekeyCarriesRunningDepth pins the recursion guard across a move:
-// a scheduled turn whose conversation is re-keyed mid-turn must still
-// arm its children one level deeper, not as fresh depth-1 items.
-func TestRekeyCarriesRunningDepth(t *testing.T) {
+// TestRekeyCarriesRunningBudget pins the budget across a move: a
+// scheduled turn whose conversation is re-keyed mid-turn must still arm
+// its children on the parent's remaining budget, not a fresh one.
+func TestRekeyCarriesRunningBudget(t *testing.T) {
 	h := newHarness(t, nil)
 	type result struct {
 		it  Item
@@ -636,11 +587,11 @@ func TestRekeyCarriesRunningDepth(t *testing.T) {
 			got <- result{err: err}
 			return nil
 		}
-		child, err := h.store.Add("moved", "child", h.clock.now().Add(time.Hour), 0)
+		child, err := h.store.Add("moved", "child", h.clock.now().Add(time.Hour), 0, Budget{})
 		got <- result{child, err}
 		return nil
 	}
-	if _, err := h.store.Add("c", "start", epoch, 0); err != nil {
+	if _, err := h.store.Add("c", "start", epoch, 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	h.run()
@@ -649,8 +600,8 @@ func TestRekeyCarriesRunningDepth(t *testing.T) {
 	if r.err != nil {
 		t.Fatalf("child: %v", r.err)
 	}
-	if r.it.Depth != 2 {
-		t.Fatalf("child depth = %d, want 2", r.it.Depth)
+	if r.it.MaxFires != DefaultMaxFires-1 || !r.it.Until.Equal(epoch.Add(DefaultUntil)) {
+		t.Fatalf("child did not inherit the parent's budget: %+v", r.it)
 	}
 }
 
@@ -688,7 +639,7 @@ func TestRunUsesInternalTicker(t *testing.T) {
 	s, err := Open(Config{
 		Path: filepath.Join(t.TempDir(), "s.json"),
 		Tick: time.Millisecond,
-		Fire: func(context.Context, Item) error { return nil },
+		Fire: func(context.Context, Item) (Result, error) { return Result{}, nil },
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -704,7 +655,7 @@ func TestSaveWriteFailure(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(Config{Path: filepath.Join(sub, "s.json"), Fire: func(context.Context, Item) error { return nil }, Now: func() time.Time { return epoch }})
+	s, err := Open(Config{Path: filepath.Join(sub, "s.json"), Fire: func(context.Context, Item) (Result, error) { return Result{}, nil }, Now: func() time.Time { return epoch }})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -714,7 +665,7 @@ func TestSaveWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
-	if _, err := s.Add("c", "x", epoch.Add(time.Hour), 0); err == nil {
+	if _, err := s.Add("c", "x", epoch.Add(time.Hour), 0, Budget{}); err == nil {
 		t.Fatal("want write error")
 	}
 }
@@ -746,15 +697,15 @@ func TestSaveRenameFailure(t *testing.T) {
 // branch is driven directly here: two items, exactly one of them due.
 func TestDueSkipsFutureItem(t *testing.T) {
 	h := newHarness(t, nil)
-	now, err := h.store.Add("conv-1", "now", epoch, 0)
+	now, err := h.store.Add("conv-1", "now", epoch, 0, Budget{})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := h.store.Add("conv-1", "later", epoch.Add(time.Hour), 0); err != nil {
+	if _, err := h.store.Add("conv-1", "later", epoch.Add(time.Hour), 0, Budget{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	claimed := h.store.due()
-	if len(claimed) != 1 || claimed[0].ID != now.ID {
+	if len(claimed) != 1 || claimed[0].id != now.ID {
 		t.Fatalf("due() = %#v, want only %s", claimed, now.ID)
 	}
 	if got := len(h.store.List("conv-1")); got != 1 {

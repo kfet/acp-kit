@@ -85,9 +85,12 @@ type Scheduler interface {
 	// — so `!help`, the commands, Status and the MCP tools appear and
 	// disappear together.
 	CanSchedule() bool
-	// Schedule arms a prompt. Depth and the caps are enforced by the
+	// Schedule arms a prompt. Budgets and the caps are enforced by the
 	// store, not by the caller.
-	Schedule(convID, text string, at time.Time, every time.Duration) (schedule.Item, error)
+	Schedule(convID, text string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error)
+	// Retime moves an armed item and sets its repeat; see
+	// schedule.Store.Retime for who may change the budget.
+	Retime(convID, id string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error)
 	// Schedules lists what is armed for the conversation.
 	Schedules(convID string) []schedule.Item
 	// Unschedule disarms one item, scoped to the conversation.
@@ -398,12 +401,21 @@ func (b *Broker) PostIDs(convID, text string) ([]string, error) {
 }
 
 // Schedule arms a prompt to be injected into the conversation later.
-func (b *Broker) Schedule(convID, text string, at time.Time, every time.Duration) (schedule.Item, error) {
+func (b *Broker) Schedule(convID, text string, at time.Time, every time.Duration, bud schedule.Budget) (schedule.Item, error) {
 	s, ok := b.scheduler()
 	if !ok {
 		return schedule.Item{}, errors.New("this relay cannot schedule prompts")
 	}
-	return s.Schedule(convID, text, at, every)
+	return s.Schedule(convID, text, at, every, bud)
+}
+
+// Retime moves one of the conversation's schedules.
+func (b *Broker) Retime(convID, id string, at time.Time, every time.Duration, bud schedule.Budget) (schedule.Item, error) {
+	s, ok := b.scheduler()
+	if !ok {
+		return schedule.Item{}, errors.New("this relay cannot schedule prompts")
+	}
+	return s.Retime(convID, id, at, every, bud)
 }
 
 // ScheduleList returns the conversation's armed schedules.
@@ -456,6 +468,10 @@ func RenderSchedules(items []schedule.Item) string {
 		}
 		if it.Fires > 0 {
 			fmt.Fprintf(&sb, ", fired %d×", it.Fires)
+		}
+		fmt.Fprintf(&sb, "; budget: %d fires left, until %s", it.FiresLeft(), it.Until.UTC().Format("2006-01-02 15:04 MST"))
+		if it.Silent > 0 {
+			fmt.Fprintf(&sb, ", %d silent in a row", it.Silent)
 		}
 		fmt.Fprintf(&sb, "\n  %s\n", oneLine(it.Text))
 	}

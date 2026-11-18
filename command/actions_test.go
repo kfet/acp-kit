@@ -18,6 +18,8 @@ type loopbackCtrl struct {
 	posted   [][2]string // {convID, text}
 	postErr  error
 	armed    []schedule.Item
+	budget   schedule.Budget
+	retimed  []string
 	addErr   error
 	unsched  [2]string
 	unschErr error
@@ -31,11 +33,21 @@ func (c *loopbackCtrl) PostTo(conv, text string) error {
 	return c.postErr
 }
 
-func (c *loopbackCtrl) Schedule(conv, text string, at time.Time, every time.Duration) (schedule.Item, error) {
+func (c *loopbackCtrl) Retime(conv, id string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
 	if c.addErr != nil {
 		return schedule.Item{}, c.addErr
 	}
-	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every, Depth: 1}
+	c.retimed = append(c.retimed, id)
+	c.budget = b
+	return schedule.Item{ID: id, Conv: conv, At: at, Every: every}, nil
+}
+
+func (c *loopbackCtrl) Schedule(conv, text string, at time.Time, every time.Duration, b schedule.Budget) (schedule.Item, error) {
+	c.budget = b
+	if c.addErr != nil {
+		return schedule.Item{}, c.addErr
+	}
+	it := schedule.Item{ID: "s01", Conv: conv, Text: text, At: at, Every: every}
 	c.armed = append(c.armed, it)
 	return it, nil
 }
@@ -77,8 +89,11 @@ func TestActionsWithoutControllerAllFail(t *testing.T) {
 	if err := b.Post("c", "hi"); err == nil {
 		t.Fatal("want post refusal")
 	}
-	if _, err := b.Schedule("c", "x", when, 0); err == nil {
+	if _, err := b.Schedule("c", "x", when, 0, schedule.Budget{}); err == nil {
 		t.Fatal("want schedule refusal")
+	}
+	if _, err := b.Retime("c", "s01", when, 0, schedule.Budget{}); err == nil {
+		t.Fatal("want retime refusal")
 	}
 	if _, err := b.ScheduleList("c"); err == nil {
 		t.Fatal("want list refusal")
@@ -120,12 +135,15 @@ func TestPost(t *testing.T) {
 func TestScheduleActions(t *testing.T) {
 	c := &loopbackCtrl{}
 	b := withCtrl(c)
-	it, err := b.Schedule("conv", "check the deploy", when, time.Hour)
+	it, err := b.Schedule("conv", "check the deploy", when, time.Hour, schedule.Budget{})
 	if err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	if it.ID != "s01" {
 		t.Fatalf("item = %+v", it)
+	}
+	if rt, err := b.Retime("conv", "s01", when, 0, schedule.Budget{MaxFires: 2}); err != nil || rt.ID != "s01" || c.budget.MaxFires != 2 {
+		t.Fatalf("Retime = %+v, %v", rt, err)
 	}
 	list, err := b.ScheduleList("conv")
 	if err != nil || len(list) != 1 {
@@ -144,7 +162,7 @@ func TestScheduleActions(t *testing.T) {
 		t.Fatalf("unsched = %v", c.unsched)
 	}
 	c.addErr = errors.New("cap reached")
-	if _, err := b.Schedule("conv", "x", when, 0); err == nil {
+	if _, err := b.Schedule("conv", "x", when, 0, schedule.Budget{}); err == nil {
 		t.Fatal("want the store's error surfaced")
 	}
 }
@@ -162,7 +180,7 @@ func TestStatusMentionsSchedules(t *testing.T) {
 	if strings.Contains(got, "schedules armed") {
 		t.Fatalf("empty schedule set should not be mentioned: %s", got)
 	}
-	if _, err := b.Schedule("conv", "later", when, 0); err != nil {
+	if _, err := b.Schedule("conv", "later", when, 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	got, err = b.Status("conv")
@@ -220,7 +238,7 @@ func TestScheduleCommands(t *testing.T) {
 	if err != nil || out == nil || !strings.Contains(out.Text, "Nothing scheduled") {
 		t.Fatalf("empty !schedules = %+v, %v", out, err)
 	}
-	if _, err := b.Schedule("conv", "check the deploy", when, 0); err != nil {
+	if _, err := b.Schedule("conv", "check the deploy", when, 0, schedule.Budget{}); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
 	out, _ = b.Handle(ctx, "conv", "!SCHEDULE")
@@ -293,7 +311,7 @@ func TestSchedulingCanBeSwitchedOff(t *testing.T) {
 	if _, err := b.ScheduleList("conv"); err == nil {
 		t.Fatal("want a refusal while off")
 	}
-	if _, err := b.Schedule("conv", "x", when, 0); err == nil {
+	if _, err := b.Schedule("conv", "x", when, 0, schedule.Budget{}); err == nil {
 		t.Fatal("want a refusal while off")
 	}
 	if err := b.Unschedule("conv", "s01"); err == nil {
@@ -361,5 +379,14 @@ func TestPostIDs(t *testing.T) {
 	ids, err = plain.PostIDs("c", "hi")
 	if err != nil || ids != nil || len(c.posted) != 1 {
 		t.Fatalf("plain = %v, %v, %v", ids, err, c.posted)
+	}
+}
+
+func TestRenderSchedulesShowsBudget(t *testing.T) {
+	out := RenderSchedules([]schedule.Item{{ID: "s01", At: when, Every: time.Hour, Fires: 2, MaxFires: 5, Until: when.Add(time.Hour), Silent: 1}})
+	for _, want := range []string{"3 fires left", "until ", "1 silent in a row"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in %s", want, out)
+		}
 	}
 }
