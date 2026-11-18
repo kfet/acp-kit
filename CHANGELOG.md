@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-17
+
 ### Changed
 - `schedule` (breaking): the `MaxDepth` chain rule is gone. Every item has a budget — `Until` (default 24h, at most 7 days) and `MaxFires` (default 20) — and is removed when either is spent. `Fire` now returns a `Result`; each silent fire doubles the next interval (cap 6h), a non-silent one resets it, and 3 silent fires in a row remove the item and call the new `Config.Stopped` (`SilentNotice` is the line to post). A scheduled turn may re-time its own item (new `Store.Retime`) or add a one-shot that inherits the parent's remaining budget (each such child spends one of the parent's fires); it cannot start a repeat or extend a budget. `Add` takes a `Budget`. Version-1 `schedules.json` files are migrated on `Open` and rewritten as version 2.
 - `command.Scheduler` gains `Retime`, and `Schedule` takes a `schedule.Budget`; `Broker.Retime` added. `RenderSchedules` shows fires left, deadline and silent streak.
