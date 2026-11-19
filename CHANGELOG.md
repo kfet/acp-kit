@@ -8,6 +8,8 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-11-19
+
 ### Fixed
 
 - autoupdate: a `>=X.Y.Z` dist.lock entry is a floor. A host at or above it gets no update offer.
