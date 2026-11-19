@@ -8,6 +8,9 @@ once it leaves v0.
 
 ## [Unreleased]
 
+- `schedule` (breaking): the agent judges when a wait is done. The silent-streak stop is off unless `Config.SilentLimit` > 0; backoff is capped by `Config.MaxBackoff` (0 = 6h, negative = none). `SilentLimit` and `MaxBackoff` constants and `SilentNotice` are gone. When the store stops an item (silent streak, fires, deadline) it fires one more turn whose `Item.Stop` is set and `Text` is `InformText`; that turn may arm a repeat with a fresh budget. `Config.MaxRearms` caps such re-arms per chain (0 = no cap, negative = never inform); `Item.Rearms` is persisted. A scheduled turn may now re-budget its own item via `Retime`, and re-timing resets its silent streak; a human re-time resets `Rearms`. A spent-fires stop is reported when its last fire ends.
+- `relaytool`: shorter `schedule` / `unschedule` guidance: unschedule when done; pass id to change timing or budget.
+
 ## [0.51.0] - 2026-11-17
 
 ### Changed

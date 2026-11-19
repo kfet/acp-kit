@@ -22,22 +22,24 @@
 //
 // # Runaway control
 //
-// A scheduled prompt costs real money every time it fires, so every
-// item carries a budget, and the budget — not a chain-depth rule — is
-// what makes everything terminate:
+// A scheduled prompt costs real money every time it fires, but the
+// agent, not a heuristic, judges when a wait is done: it unschedules.
+// The store only bounds what the operator configures:
 //
-//   - Until is a deadline (default 24h after arming, at most MaxUntil)
-//     and MaxFires a fire count (default DefaultMaxFires). The item is
-//     removed when either is spent.
-//   - A scheduled turn cannot buy more budget. It may re-time its own
-//     item (Retime) or add a one-shot (Add) that inherits the parent's
-//     remaining Until and fires; it may not start a new repeat. Only a
-//     turn that was NOT started by a schedule arms a fresh budget.
-//   - Fire reports whether the turn was silent (nothing worth
-//     posting). Each silent fire doubles the next interval, up to
-//     MaxBackoff; a non-silent fire resets it to Every. After
-//     SilentLimit silent fires in a row the item is removed and the
-//     relay is told through Stopped, so it can say so once.
+//   - Every item has a budget: Until (default 24h after arming, at
+//     most MaxUntil) and MaxFires (default DefaultMaxFires). The item
+//     is removed when either is spent.
+//   - A scheduled turn may re-time and re-budget its own item (Retime;
+//     an ETA moved out) and add one-shots (Add) that inherit the
+//     parent's remaining budget; it may not start a new repeat.
+//   - Fire reports whether the turn was silent. Each silent fire
+//     doubles the next interval, up to Config.MaxBackoff; a non-silent
+//     fire or a re-time resets it. Config.SilentLimit, off by default,
+//     stops an item after that many silent fires in a row.
+//   - When the store stops an item it fires one more turn that tells
+//     the agent (Item.Stop, InformText). That turn may arm a repeat
+//     with a fresh budget; Config.MaxRearms caps how often a chain
+//     does so.
 //   - MaxPerConv and MaxTotal cap how many items can be armed at once,
 //     and MinInterval floors a repeat.
 //
@@ -58,6 +60,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -87,11 +90,8 @@ const (
 	// DefaultMaxFires is how many fires a budget allows when the caller
 	// names no count.
 	DefaultMaxFires = 20
-	// MaxBackoff caps the interval a silent streak stretches a repeat
-	// to (a repeat slower than this to begin with is left alone).
-	MaxBackoff = 6 * time.Hour
-	// SilentLimit is how many silent fires in a row remove an item.
-	SilentLimit = 3
+	// DefaultMaxBackoff is Config.MaxBackoff when the relay sets none.
+	DefaultMaxBackoff = 6 * time.Hour
 	// oneShotGrace is the budget a migrated one-shot gets past its At.
 	oneShotGrace = time.Hour
 	// MaxTextLen bounds one scheduled prompt. A schedule is stored
@@ -100,16 +100,12 @@ const (
 	MaxTextLen = 4000
 )
 
-// SilentNotice is the one line a relay posts when an item is removed
-// for StopSilent.
-const SilentNotice = "stopped: no news after 3 checks — reply here to resume"
-
 // Stop says why the store removed an item on its own.
 type Stop string
 
-// Reasons passed to Config.Stopped.
+// Reasons passed to Config.Stopped and set on a stop-informed Item.
 const (
-	// StopSilent: SilentLimit silent fires in a row.
+	// StopSilent: Config.SilentLimit silent fires in a row.
 	StopSilent Stop = "silent"
 	// StopFires: MaxFires spent.
 	StopFires Stop = "fires"
@@ -157,19 +153,45 @@ type Item struct {
 	Silent int `json:"silent,omitempty"`
 	// Created is when the item was armed (UTC).
 	Created time.Time `json:"created"`
+	// Rearms counts how many stop-informed turns this chain has gone
+	// through: an item armed in such a turn has the stopped item's
+	// Rearms plus one, and a one-shot child inherits its parent's.
+	Rearms int `json:"rearms,omitempty"`
+	// Stop is set only on the item handed to Config.Fire for a
+	// stop-informed turn (its Text is then InformText); never stored.
+	Stop Stop `json:"-"`
+}
+
+// InformText is the prompt of the turn that tells the agent its
+// schedule stopped. The agent decides what happens next: arm a new
+// schedule (this turn may, with a fresh budget) or be done.
+func InformText(it Item, why Stop) string {
+	var reason string
+	switch why {
+	case StopSilent:
+		reason = fmt.Sprintf("%d silent answers in a row", it.Silent)
+	case StopFires:
+		reason = fmt.Sprintf("its budget of %d fires is spent", it.MaxFires)
+	default:
+		reason = "its deadline " + it.Until.UTC().Format(time.RFC3339) + " passed"
+	}
+	return fmt.Sprintf("Schedule %s stopped: %s. Its prompt:\n%s\n\n"+
+		"Still needed? Schedule it again, with any timing and budget. Done? Do nothing.",
+		it.ID, reason, it.Text)
 }
 
 // FiresLeft is how many fires the budget still allows.
 func (i Item) FiresLeft() int { return max(i.MaxFires-i.Fires, 0) }
 
 // Interval is the gap before the next repeat: Every doubled once per
-// silent fire in the current streak, capped at MaxBackoff (or Every,
-// when that is larger). Zero for a one-shot.
-func (i Item) Interval() time.Duration {
+// silent fire in the current streak, capped at maxBackoff (or Every,
+// when that is larger). maxBackoff <= 0 means no backoff. Zero for a
+// one-shot.
+func (i Item) Interval(maxBackoff time.Duration) time.Duration {
 	if i.Every <= 0 {
 		return 0
 	}
-	ceiling := max(MaxBackoff, i.Every)
+	ceiling := max(maxBackoff, i.Every)
 	d := i.Every
 	for n := 0; n < i.Silent && d < ceiling; n++ {
 		d *= 2
@@ -191,13 +213,14 @@ type itemJSON struct {
 	Until    time.Time `json:"until"`
 	MaxFires int       `json:"max_fires"`
 	Silent   int       `json:"silent,omitempty"`
+	Rearms   int       `json:"rearms,omitempty"`
 	Created  time.Time `json:"created"`
 }
 
 // MarshalJSON implements json.Marshaler.
 func (i Item) MarshalJSON() ([]byte, error) {
 	j := itemJSON{ID: i.ID, Conv: i.Conv, Text: i.Text, At: i.At, Fires: i.Fires,
-		Until: i.Until, MaxFires: i.MaxFires, Silent: i.Silent, Created: i.Created}
+		Until: i.Until, MaxFires: i.MaxFires, Silent: i.Silent, Rearms: i.Rearms, Created: i.Created}
 	if i.Every > 0 {
 		j.Every = i.Every.String()
 	}
@@ -211,7 +234,7 @@ func (i *Item) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	*i = Item{ID: j.ID, Conv: j.Conv, Text: j.Text, At: j.At, Fires: j.Fires,
-		Until: j.Until, MaxFires: j.MaxFires, Silent: j.Silent, Created: j.Created}
+		Until: j.Until, MaxFires: j.MaxFires, Silent: j.Silent, Rearms: j.Rearms, Created: j.Created}
 	if j.Every != "" {
 		d, err := time.ParseDuration(j.Every)
 		if err != nil {
@@ -242,7 +265,8 @@ type Config struct {
 	Fire func(ctx context.Context, it Item) (Result, error)
 	// Stopped, when set, is told about every item the store removes on
 	// its own (budget spent, silent streak). It is called without the
-	// store's lock held.
+	// store's lock held. The agent itself is told through a
+	// stop-informed fire (see MaxRearms), not through Stopped.
 	Stopped func(it Item, why Stop)
 
 	// MaxPerConv, MaxTotal and MinInterval bound runaway scheduling;
@@ -255,6 +279,21 @@ type Config struct {
 	// MaxUntil.
 	DefaultUntil    time.Duration
 	DefaultMaxFires int
+	// SilentLimit, when positive, stops an item after that many
+	// silent fires in a row (StopSilent); the agent is then informed.
+	// Zero or negative disables it.
+	SilentLimit int
+	// MaxBackoff caps how far silent fires stretch a repeat's interval
+	// (doubling once per silent fire). Zero means DefaultMaxBackoff;
+	// negative disables backoff, so a repeat always fires every Every.
+	MaxBackoff time.Duration
+	// MaxRearms caps stop-informed turns per chain. When the store
+	// stops an item it fires one more turn in its conversation whose
+	// Item has Stop set and Text = InformText, so the agent can arm a
+	// new schedule (with a fresh budget) or be done. Zero means no cap;
+	// a positive N skips the informed turn once a chain has been
+	// re-armed N times; negative never informs.
+	MaxRearms int
 
 	// Tick is how often the loop looks for due items. Zero means
 	// DefaultTick. Ignored when Ticks is set.
@@ -309,6 +348,9 @@ func Open(cfg Config) (*Store, error) {
 		cfg.DefaultUntil = DefaultUntil
 	}
 	cfg.DefaultUntil = min(cfg.DefaultUntil, MaxUntil)
+	if cfg.MaxBackoff == 0 {
+		cfg.MaxBackoff = DefaultMaxBackoff
+	}
 	if cfg.DefaultMaxFires <= 0 {
 		cfg.DefaultMaxFires = DefaultMaxFires
 	}
@@ -410,7 +452,11 @@ func (s *Store) Add(conv, text string, at time.Time, every time.Duration, b Budg
 	parent := s.parentLocked(conv)
 	var until time.Time
 	var fires int
+	rearms := 0
 	if parent != nil {
+		rearms = parent.rearms
+	}
+	if parent != nil && !parent.informed {
 		if every != 0 {
 			return Item{}, fmt.Errorf("schedule: a scheduled turn cannot start a new repeat — leave schedule %s running, or re-time it", parent.id)
 		}
@@ -442,6 +488,7 @@ func (s *Store) Add(conv, text string, at time.Time, every time.Duration, b Budg
 		Until:    until.UTC(),
 		MaxFires: fires,
 		Created:  now.UTC(),
+		Rearms:   rearms,
 	}
 	s.items[it.ID] = it
 	// A child spends one of the parent's fires, so one turn cannot fan
@@ -490,19 +537,22 @@ func (s *Store) Retime(conv, id string, at time.Time, every time.Duration, b Bud
 	}
 	old := *it
 	parent := s.parentLocked(it.Conv)
-	if parent != nil {
+	if parent != nil && !parent.informed {
 		if !parent.owns(id) {
 			return Item{}, fmt.Errorf("schedule: a scheduled turn can only re-time its own schedule (%s)", parent.id)
 		}
-		if b != (Budget{}) {
-			return Item{}, errors.New("schedule: a scheduled turn cannot change a budget")
-		}
-	} else {
+	}
+	// Any turn may re-budget an item it owns: the agent judges how
+	// long a wait needs (an ETA moved out); config caps still apply.
+	if parent == nil || b != (Budget{}) {
 		until, fires, err := s.freshBudget(now, b)
 		if err != nil {
 			return Item{}, err
 		}
 		it.Until, it.MaxFires, it.Silent = until.UTC(), it.Fires+fires, 0
+		if parent == nil {
+			it.Rearms = 0
+		}
 	}
 	if at.After(it.Until) {
 		*it = old
@@ -679,7 +729,7 @@ func (s *Store) due() []*firing {
 			stops = append(stops, stopped{*it, StopUntil})
 			continue
 		}
-		f := &firing{conv: it.Conv, id: it.ID, until: it.Until, item: *it, at: now}
+		f := &firing{conv: it.Conv, id: it.ID, until: it.Until, item: *it, at: now, rearms: it.Rearms}
 		it.Fires++
 		f.left = it.FiresLeft()
 		switch {
@@ -687,9 +737,9 @@ func (s *Store) due() []*firing {
 			delete(s.items, id)
 		case f.left == 0:
 			delete(s.items, id)
-			stops = append(stops, stopped{*it, StopFires})
+			f.final = StopFires
 		default:
-			it.At = nextAfter(it.At, it.Interval(), now)
+			it.At = nextAfter(it.At, it.Interval(s.cfg.MaxBackoff), now)
 		}
 		s.firing[f] = struct{}{}
 		out = append(out, f)
@@ -703,17 +753,36 @@ func (s *Store) due() []*firing {
 		}
 	}
 	s.mu.Unlock()
-	s.report(stops)
+	out = append(out, s.report(stops)...)
 	sort.Slice(out, func(a, b int) bool { return itemLess(out[a].item, out[b].item) })
 	return out
 }
 
-// report hands removals to Stopped. Caller does NOT hold mu.
-func (s *Store) report(stops []stopped) {
+// report hands removals to Stopped and claims one stop-informed fire
+// per removal the MaxRearms cap allows; the caller starts them. Caller
+// does NOT hold mu.
+func (s *Store) report(stops []stopped) []*firing {
+	var out []*firing
 	for _, st := range stops {
 		s.cfg.Logf("schedule: removed %s (%s)", st.it.ID, st.why)
 		s.cfg.Stopped(st.it, st.why)
+		if s.cfg.MaxRearms < 0 || (s.cfg.MaxRearms > 0 && st.it.Rearms >= s.cfg.MaxRearms) {
+			continue
+		}
+		it := st.it
+		it.Text, it.Stop = InformText(st.it, st.why), st.why
+		// left is MaxInt so a concurrent regular fire in the same
+		// conversation, whose budget is tighter, keeps attribution
+		// (parentLocked); relays that serialise turns per
+		// conversation never overlap the two.
+		f := &firing{conv: it.Conv, item: it, at: s.cfg.Now(), informed: true,
+			rearms: it.Rearms + 1, left: math.MaxInt}
+		s.mu.Lock()
+		s.firing[f] = struct{}{}
+		s.mu.Unlock()
+		out = append(out, f)
 	}
+	return out
 }
 
 // nextAfter advances at by every until it is in the future, so a relay
@@ -748,6 +817,13 @@ type firing struct {
 	// retimed is set when the turn re-timed its own item, so the
 	// end-of-fire reschedule does not overwrite it.
 	retimed bool
+	// informed marks a stop-informed turn: it may arm repeats with
+	// fresh budgets, each carrying rearms.
+	informed bool
+	rearms   int
+	// final is set when this fire spent its item's budget; the stop is
+	// reported when the fire ends, not alongside it.
+	final Stop
 }
 
 // owns says whether this fire may re-time item id.
@@ -762,7 +838,9 @@ func (s *Store) start(ctx context.Context, f *firing) {
 	go func() {
 		defer s.wg.Done()
 		res, err := s.cfg.Fire(ctx, f.item)
-		s.endFire(f, res, err)
+		for _, g := range s.endFire(f, res, err) {
+			s.start(ctx, g)
+		}
 	}()
 }
 
@@ -770,11 +848,16 @@ func (s *Store) start(ctx context.Context, f *firing) {
 // removes the item; any other error is logged and changes nothing; a
 // result updates the silent streak of the item and of every one-shot
 // the turn armed.
-func (s *Store) endFire(f *firing, res Result, err error) {
+func (s *Store) endFire(f *firing, res Result, err error) []*firing {
 	s.mu.Lock()
 	delete(s.firing, f)
 	var stops []stopped
 	switch {
+	case f.informed:
+		// Nothing of its own to update: what it armed is fresh.
+		if err != nil && !errors.Is(err, ErrGone) {
+			s.cfg.Logf("schedule: informing about %s: %v", f.item.ID, err)
+		}
 	case errors.Is(err, ErrGone):
 		if it, ok := s.items[f.id]; ok {
 			delete(s.items, f.id)
@@ -783,9 +866,19 @@ func (s *Store) endFire(f *firing, res Result, err error) {
 		s.cfg.Logf("schedule: dropped %s — its conversation is gone", f.id)
 	case err != nil:
 		s.cfg.Logf("schedule: firing %s: %v", f.id, err)
+		if f.final != "" {
+			stops = append(stops, stopped{f.item, f.final})
+		}
 	default:
+		if f.final != "" {
+			it := f.item
+			it.Fires = it.MaxFires
+			stops = append(stops, stopped{it, f.final})
+		}
 		streak := 0
-		if res.Silent {
+		// A turn that re-timed its item has judged the wait; its
+		// silence does not count against it.
+		if res.Silent && !f.retimed {
 			streak = f.item.Silent + 1
 		}
 		changed, noticed := false, false
@@ -796,7 +889,7 @@ func (s *Store) endFire(f *firing, res Result, err error) {
 			}
 			changed = true
 			it.Silent = streak
-			if streak >= SilentLimit {
+			if s.cfg.SilentLimit > 0 && streak >= s.cfg.SilentLimit {
 				delete(s.items, id)
 				// One notice per fire, however many items it ends.
 				if !noticed {
@@ -806,7 +899,7 @@ func (s *Store) endFire(f *firing, res Result, err error) {
 				continue
 			}
 			if id == f.id && !f.retimed {
-				it.At = nextAfter(f.item.At, it.Interval(), s.cfg.Now())
+				it.At = nextAfter(f.item.At, it.Interval(s.cfg.MaxBackoff), s.cfg.Now())
 				if it.At.After(it.Until) {
 					delete(s.items, id)
 					stops = append(stops, stopped{*it, StopUntil})
@@ -818,7 +911,7 @@ func (s *Store) endFire(f *firing, res Result, err error) {
 		}
 	}
 	s.mu.Unlock()
-	s.report(stops)
+	return s.report(stops)
 }
 
 // persistLocked commits and logs a failure: the fire already happened,

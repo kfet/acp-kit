@@ -35,13 +35,14 @@ var epoch = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 // harness builds a Store over a temp file with a hand-driven clock and
 // tick channel, plus a fire recorder.
 type harness struct {
-	t      *testing.T
-	store  *Store
-	clock  *fixedClock
-	ticks  chan time.Time
-	path   string
-	cancel context.CancelFunc
-	done   chan struct{}
+	informed []Item
+	t        *testing.T
+	store    *Store
+	clock    *fixedClock
+	ticks    chan time.Time
+	path     string
+	cancel   context.CancelFunc
+	done     chan struct{}
 
 	mu    sync.Mutex
 	fired []Item

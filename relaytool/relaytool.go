@@ -268,18 +268,11 @@ func (t *Tools) Tools() []Tool {
 func (t *Tools) scheduleTools() []Tool {
 	return []Tool{{
 		Name: ToolSchedule,
-		Description: "Schedule a prompt to be sent to you later IN THIS CONVERSATION, with its full history. " +
-			"On fire it starts a normal turn whose answer is posted here. Use it for conversation-scoped " +
-			"follow-ups (\"check whether that deploy landed in 20 minutes\"), not for host chores. " +
-			"Your turn ends when you stop writing, and nothing wakes you again by itself. So when you " +
-			"intend to come back to a task later, or to check on a subagent, a build, or any job you " +
-			"started, schedule the wake-up NOW, in the same turn. Say what to verify in the prompt text, " +
-			"so the future turn can act without guessing. To wait for something, use ONE repeating " +
-			"schedule (every) whose text states the exit condition; when it is not met yet, answer " +
-			"silently and leave it running — do not chain one-shots. Every schedule has a budget " +
-			"(until, max_fires; default 24h / 20 fires) and is removed when either is spent or after " +
-			"3 silent fires in a row. A scheduled turn cannot extend its budget; pass id to re-time " +
-			"its own schedule instead.",
+		Description: "Send yourself a prompt later IN THIS CONVERSATION; its answer posts here. Nothing else wakes " +
+			"you, so to check back on a build, deploy or subagent, schedule it now and put the exit condition " +
+			"in text. To wait, use one repeat (every); while not done, answer silently (silence backs off). " +
+			"You judge when it is done: then unschedule it. To change timing or budget (ETA moved), pass id. " +
+			"Budget defaults: 24h / 20 fires. If it stops, you get a turn to re-arm it.",
 		Schema: objectSchema(map[string]any{
 			"text":      strProp("The prompt to send yourself when it fires."),
 			"in":        strProp("Delay from now as a Go duration, e.g. \"45m\", \"2h30m\". Use this or at."),
@@ -287,7 +280,7 @@ func (t *Tools) scheduleTools() []Tool {
 			"every":     strProp("Optional repeat interval as a Go duration, e.g. \"24h\". Omit for one-shot."),
 			"until":     strProp("Optional budget deadline: a Go duration from now (\"6h\") or RFC3339 time. Default 24h, at most 7 days."),
 			"max_fires": map[string]any{"type": "integer", "description": "Optional budget: how many times it may fire. Default 20."},
-			"id":        strProp("Optional id of an armed schedule to re-time instead of arming a new one (text is then ignored)."),
+			"id":        strProp("Optional id of your schedule to change (timing and budget) instead of arming a new one; text is ignored."),
 		}),
 		Handler: t.wrap(func(conv string, args json.RawMessage) (string, error) {
 			var a struct {
@@ -349,7 +342,7 @@ func (t *Tools) scheduleTools() []Tool {
 		}),
 	}, {
 		Name:        ToolUnschedule,
-		Description: "Cancel a scheduled prompt in this conversation by id.",
+		Description: "Cancel a schedule by id. Call it when a wait is done.",
 		Schema: objectSchemaReq(map[string]any{
 			"id": strProp("Schedule id, as returned by schedule or list_schedules."),
 		}, "id"),

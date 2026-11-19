@@ -14,12 +14,21 @@ import (
 // fireOnce claims every due item and ends each fire with res, as the
 // loop would, but synchronously.
 func (h *harness) fireOnce(res Result, during func(f *firing)) []*firing {
-	fs := h.store.due()
-	for _, f := range fs {
+	var fs []*firing
+	queue := h.store.due()
+	for len(queue) > 0 {
+		f := queue[0]
+		queue = queue[1:]
+		if f.informed {
+			h.informed = append(h.informed, f.item)
+			queue = append(queue, h.store.endFire(f, res, nil)...)
+			continue
+		}
+		fs = append(fs, f)
 		if during != nil {
 			during(f)
 		}
-		h.store.endFire(f, res, nil)
+		queue = append(queue, h.store.endFire(f, res, nil)...)
 	}
 	return fs
 }
@@ -31,20 +40,20 @@ func (h *harness) stopList() []string {
 }
 
 func TestIntervalAndFiresLeft(t *testing.T) {
-	if (Item{}).Interval() != 0 {
+	if (Item{}).Interval(DefaultMaxBackoff) != 0 {
 		t.Fatal("one-shot has no interval")
 	}
 	it := Item{Every: time.Hour, Silent: 2}
-	if it.Interval() != 4*time.Hour {
-		t.Fatalf("got %s", it.Interval())
+	if it.Interval(DefaultMaxBackoff) != 4*time.Hour {
+		t.Fatalf("got %s", it.Interval(DefaultMaxBackoff))
 	}
 	it.Silent = 10
-	if it.Interval() != MaxBackoff {
-		t.Fatalf("cap: got %s", it.Interval())
+	if it.Interval(DefaultMaxBackoff) != DefaultMaxBackoff {
+		t.Fatalf("cap: got %s", it.Interval(DefaultMaxBackoff))
 	}
 	slow := Item{Every: 12 * time.Hour, Silent: 2}
-	if slow.Interval() != 12*time.Hour {
-		t.Fatalf("slow repeat must not stretch: %s", slow.Interval())
+	if slow.Interval(DefaultMaxBackoff) != 12*time.Hour {
+		t.Fatalf("slow repeat must not stretch: %s", slow.Interval(DefaultMaxBackoff))
 	}
 	if (Item{MaxFires: 1, Fires: 3}).FiresLeft() != 0 {
 		t.Fatal("FiresLeft must not go negative")
@@ -116,7 +125,7 @@ func TestUntilStopsAfterLastFire(t *testing.T) {
 }
 
 func TestSilentStreakBacksOffThenStops(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newHarness(t, func(c *Config) { c.SilentLimit = 3 })
 	it, _ := h.store.Add("c", "x", epoch, time.Hour, Budget{})
 	h.fireOnce(Result{Silent: true}, nil)
 	got := h.store.List("")[0]
@@ -130,8 +139,8 @@ func TestSilentStreakBacksOffThenStops(t *testing.T) {
 	if got.Silent != 0 || !got.At.Equal(epoch.Add(3*time.Hour)) {
 		t.Fatalf("after reset: %+v", got)
 	}
-	for range SilentLimit {
-		h.clock.advance(MaxBackoff)
+	for range h.store.cfg.SilentLimit {
+		h.clock.advance(DefaultMaxBackoff)
 		h.fireOnce(Result{Silent: true}, nil)
 	}
 	if len(h.store.List("")) != 0 {
@@ -180,9 +189,6 @@ func TestScheduledTurnLimits(t *testing.T) {
 		if _, err := h.store.Retime("c", other.ID, epoch.Add(time.Hour), 0, Budget{}); err == nil {
 			t.Error("retiming another schedule must be refused")
 		}
-		if _, err := h.store.Retime("c", parent.ID, epoch.Add(time.Hour), time.Hour, Budget{MaxFires: 9}); err == nil {
-			t.Error("changing the budget must be refused")
-		}
 		if _, err := h.store.Retime("c", child.ID, epoch.Add(2*time.Minute), 0, Budget{}); err != nil {
 			t.Errorf("retiming own child: %v", err)
 		}
@@ -200,11 +206,11 @@ func TestScheduledTurnLimits(t *testing.T) {
 	for _, it := range h.store.List("") {
 		got[it.ID] = it
 	}
-	if p := got[parent.ID]; !p.At.Equal(epoch.Add(9*time.Hour)) || p.Silent != 1 || p.MaxFires != 1 {
-		t.Fatalf("own retime must stick; each child spends a parent fire: %+v", p)
+	if p := got[parent.ID]; !p.At.Equal(epoch.Add(9*time.Hour)) || p.Silent != 0 || p.MaxFires != 1 {
+		t.Fatalf("own retime must stick and reset the streak; each child spends a parent fire: %+v", p)
 	}
-	if c := got[child.ID]; c.Silent != 1 {
-		t.Fatalf("child must inherit the streak: %+v", c)
+	if c := got[child.ID]; c.Silent != 0 {
+		t.Fatalf("child must inherit the reset streak: %+v", c)
 	}
 }
 
@@ -219,9 +225,9 @@ func TestSpentParentCannotArmChild(t *testing.T) {
 }
 
 func TestChildOfSilentChainStops(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newHarness(t, func(c *Config) { c.SilentLimit = 3 })
 	h.store.Add("c", "p", epoch, 0, Budget{})
-	for i := range SilentLimit {
+	for i := range h.store.cfg.SilentLimit {
 		h.fireOnce(Result{Silent: true}, func(*firing) {
 			if _, err := h.store.Add("c", "again", h.clock.now().Add(time.Minute), 0, Budget{}); err != nil {
 				t.Errorf("link %d: %v", i, err)
@@ -255,8 +261,9 @@ func TestRetimeByHuman(t *testing.T) {
 	it, _ := h.store.Add("c", "x", epoch.Add(time.Hour), time.Hour, Budget{MaxFires: 2})
 	h.store.items[it.ID].Silent = 2
 	h.store.items[it.ID].Fires = 2
+	h.store.items[it.ID].Rearms = 3
 	got, err := h.store.Retime("c", it.ID, epoch.Add(2*time.Hour), 2*time.Hour, Budget{MaxFires: 4})
-	if err != nil || got.Silent != 0 || got.MaxFires != 6 || got.Every != 2*time.Hour || !got.At.Equal(epoch.Add(2*time.Hour)) {
+	if err != nil || got.Silent != 0 || got.Rearms != 0 || got.MaxFires != 6 || got.Every != 2*time.Hour || !got.At.Equal(epoch.Add(2*time.Hour)) {
 		t.Fatalf("retime: %+v %v", got, err)
 	}
 	for name, call := range map[string]func() error{
@@ -401,9 +408,9 @@ func TestChildCommitFailureRestoresParent(t *testing.T) {
 }
 
 func TestOneSilentNoticePerFire(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newHarness(t, func(c *Config) { c.SilentLimit = 3 })
 	p, _ := h.store.Add("c", "p", epoch, time.Hour, Budget{})
-	h.store.items[p.ID].Silent = SilentLimit - 1
+	h.store.items[p.ID].Silent = 2
 	h.fireOnce(Result{Silent: true}, func(*firing) {
 		for range 2 {
 			if _, err := h.store.Add("c", "k", epoch.Add(time.Minute), 0, Budget{}); err != nil {
@@ -432,5 +439,134 @@ func TestMigrateOverdueOneShotSurvives(t *testing.T) {
 	}
 	if it := s.List("")[0]; !it.Until.Equal(now.Add(time.Hour)) {
 		t.Fatalf("overdue one-shot must still fire: %+v", it)
+	}
+}
+
+func TestSilenceAloneNeverStopsByDefault(t *testing.T) {
+	h := newHarness(t, nil)
+	h.store.Add("c", "x", epoch, time.Hour, Budget{MaxFires: 50, Until: epoch.Add(MaxUntil)})
+	for range 10 {
+		h.clock.advance(DefaultMaxBackoff)
+		h.fireOnce(Result{Silent: true}, nil)
+	}
+	got := h.store.List("")
+	if len(got) != 1 || got[0].Silent != 10 {
+		t.Fatalf("silence must only back off: %+v", got)
+	}
+	if s := h.stopList(); len(s) != 0 {
+		t.Fatalf("stops = %v", s)
+	}
+}
+
+func TestBackoffDisabled(t *testing.T) {
+	if got := (Item{Every: time.Hour, Silent: 3}).Interval(-1); got != time.Hour {
+		t.Fatal(got)
+	}
+	h := newHarness(t, func(c *Config) { c.MaxBackoff = -1 })
+	h.store.Add("c", "x", epoch, time.Hour, Budget{})
+	h.fireOnce(Result{Silent: true}, nil)
+	if got := h.store.List("")[0]; !got.At.Equal(epoch.Add(time.Hour)) {
+		t.Fatalf("no backoff: %+v", got)
+	}
+}
+
+func TestScheduledTurnRebudgetsOwnItem(t *testing.T) {
+	h := newHarness(t, nil)
+	it, _ := h.store.Add("c", "eta", epoch, time.Hour, Budget{MaxFires: 2})
+	h.fireOnce(Result{Silent: true}, func(*firing) {
+		if _, err := h.store.Retime("c", it.ID, epoch.Add(30*time.Hour), 2*time.Hour, Budget{Until: epoch.Add(48 * time.Hour), MaxFires: 9}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	got := h.store.List("")[0]
+	if !got.At.Equal(epoch.Add(30*time.Hour)) || got.Every != 2*time.Hour || got.FiresLeft() != 9 || got.Silent != 0 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestStopInformsAgentWhoMayRearm(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.SilentLimit = 1; c.MaxRearms = 1 })
+	it, _ := h.store.Add("c", "build done?", epoch, time.Hour, Budget{})
+	f := h.store.due()[0]
+	informs := h.store.endFire(f, Result{Silent: true}, nil)
+	if len(informs) != 1 || !informs[0].informed {
+		t.Fatalf("want one informed turn: %v", informs)
+	}
+	in := informs[0].item
+	if in.Stop != StopSilent || !strings.Contains(in.Text, it.ID) || !strings.Contains(in.Text, "build done?") {
+		t.Fatalf("inform = %+v", in)
+	}
+	rearmed, err := h.store.Add("c", "build done?", epoch.Add(time.Hour), 3*time.Hour, Budget{MaxFires: 5})
+	if err != nil || rearmed.Rearms != 1 || rearmed.MaxFires != 5 {
+		t.Fatalf("informed turn may arm a repeat with a fresh budget: %+v %v", rearmed, err)
+	}
+	if more := h.store.endFire(informs[0], Result{}, ErrGone); len(more) != 0 {
+		t.Fatal(more)
+	}
+	// The cap reached: the next stop of this chain informs nobody.
+	h.clock.advance(time.Hour)
+	if n := len(h.fireOnce(Result{Silent: true}, nil)); n != 1 || len(h.informed) != 0 {
+		t.Fatalf("fires %d, informed %v", n, h.informed)
+	}
+	if len(h.store.List("")) != 0 {
+		t.Fatal("stopped")
+	}
+}
+
+func TestInformTextReasons(t *testing.T) {
+	it := Item{ID: "x", Text: "t", Silent: 4, MaxFires: 7, Until: epoch}
+	for why, want := range map[Stop]string{StopSilent: "4 silent", StopFires: "7 fires", StopUntil: "deadline"} {
+		if got := InformText(it, why); !strings.Contains(got, want) {
+			t.Errorf("%s: %s", why, got)
+		}
+	}
+}
+
+func TestNeverInform(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxRearms = -1 })
+	h.store.Add("c", "x", epoch, time.Hour, Budget{MaxFires: 1})
+	h.fireOnce(Result{}, nil)
+	if len(h.informed) != 0 || len(h.stopList()) != 1 {
+		t.Fatal(h.informed, h.stopList())
+	}
+}
+
+func TestFinalFireErrorStillStops(t *testing.T) {
+	h := newHarness(t, nil)
+	h.store.Add("c", "x", epoch, time.Hour, Budget{MaxFires: 1})
+	f := h.store.due()[0]
+	informs := h.store.endFire(f, Result{}, os.ErrClosed)
+	if len(informs) != 1 || informs[0].item.Stop != StopFires {
+		t.Fatal(informs)
+	}
+	h.store.endFire(informs[0], Result{}, os.ErrClosed)
+}
+
+func TestRunInformsAfterFinalFire(t *testing.T) {
+	h := newHarness(t, nil)
+	got := make(chan Item, 2)
+	h.fire = func(_ context.Context, it Item) error { got <- it; return nil }
+	it, _ := h.store.Add("c", "x", epoch, time.Hour, Budget{MaxFires: 1})
+	h.run()
+	h.tick()
+	if f := <-got; f.ID != it.ID || f.Stop != "" {
+		t.Fatalf("first = %+v", f)
+	}
+	if f := <-got; f.Stop != StopFires {
+		t.Fatalf("inform = %+v", f)
+	}
+}
+
+func TestInformedTurnRetimesAnyItem(t *testing.T) {
+	h := newHarness(t, nil)
+	other, _ := h.store.Add("c", "o", epoch.Add(5*time.Hour), 0, Budget{})
+	h.store.Add("c", "x", epoch, time.Hour, Budget{MaxFires: 1})
+	f := h.store.due()[0]
+	informs := h.store.endFire(f, Result{Silent: true}, nil)
+	if len(informs) != 1 || informs[0].item.Stop != StopFires {
+		t.Fatalf("one inform per fire: %v", informs)
+	}
+	if _, err := h.store.Retime("c", other.ID, epoch.Add(time.Hour), 0, Budget{}); err != nil {
+		t.Fatalf("informed turn may change any schedule here: %v", err)
 	}
 }
