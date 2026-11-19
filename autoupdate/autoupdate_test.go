@@ -727,6 +727,35 @@ func TestRunLoop(t *testing.T) {
 	}
 }
 
+func TestFleetLockFloor(t *testing.T) {
+	e := newEnv(t)
+	lock := filepath.Join(e.dir, "dist.lock")
+	write(t, lock, `{"zulip_acp":">=0.9.0","fir":">=1.1.0"}`)
+	c := e.cfg()
+	c.Fleet, c.LockFile, c.ConvID = true, lock, "conv"
+	c.Updater = update.New(update.Config{
+		RelayName: "zulip-acp", RelayVersion: "1.0.0", RelayBin: e.bin, AgentBin: e.agent,
+		Owners: []string{"own"}, StateDir: filepath.Join(e.dir, "u"), Fleet: true, LockFile: lock,
+		ConvergeCmd: "true", PollInterval: time.Millisecond,
+		Version: func(context.Context, string) string { return "1.0.0" },
+	})
+	m := e.mgr(c)
+	ctx := context.Background()
+	m.Poll(ctx)
+	if m.st.Offer != nil || len(e.surf.order) != 0 {
+		t.Fatal("a host above the floor got an offer")
+	}
+	write(t, lock, `{"zulip_acp":">=1.1.0","fir":">=1.3.0"}`)
+	m.Poll(ctx)
+	if m.st.Offer == nil {
+		t.Fatal("a host below the floor got no offer")
+	}
+	got := e.surf.get(e.surf.order[0])
+	if !strings.Contains(got, "dist.lock wants zulip-acp v1.1.0, running v1.0.0") || !strings.Contains(got, "fir >=1.3.0") {
+		t.Fatal(got)
+	}
+}
+
 func TestFleetLockOffer(t *testing.T) {
 	e := newEnv(t)
 	lock := filepath.Join(e.dir, "dist.lock")

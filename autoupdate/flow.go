@@ -94,10 +94,11 @@ func (m *Manager) stage(ctx context.Context, rel *distkit.Release) (string, erro
 
 func (m *Manager) pollLock(ctx context.Context) {
 	lock := readLock(m.cfg.LockFile)
-	wantRelay, wantAgent := ensureV(lock[m.cfg.RelayLockKey]), lock[m.cfg.AgentLockKey]
+	wantAgent := lock[m.cfg.AgentLockKey]
+	wantRelay, drift := lockDrift(lock[m.cfg.RelayLockKey], m.cfg.RelayVersion)
 	runAgent := m.runningAgent()
-	drift := wantRelay != "" && wantRelay != ensureV(m.cfg.RelayVersion)
-	agentDrift := wantAgent != "" && runAgent != "?" && strings.TrimPrefix(wantAgent, "v") != strings.TrimPrefix(runAgent, "v")
+	_, agentDrift := lockDrift(wantAgent, runAgent)
+	agentDrift = agentDrift && runAgent != "?"
 	if !drift && !agentDrift {
 		if m.st.Offer != nil {
 			m.drop() // converged by other means
@@ -109,6 +110,18 @@ func (m *Manager) pollLock(ctx context.Context) {
 		return
 	}
 	m.replace(ctx, &offer{Lock: true, Version: wantRelay, Agent: wantAgent, Posted: m.cfg.Now()})
+}
+
+// lockDrift reads one dist.lock entry. ">=X.Y.Z" is a floor: running drifts
+// only when it is older than X.Y.Z. Any other entry is an exact pin. want is
+// the entry's version with a "v" prefix ("" for an empty entry).
+func lockDrift(entry, running string) (want string, drift bool) {
+	if floor, ok := strings.CutPrefix(entry, ">="); ok {
+		want = ensureV(strings.TrimSpace(floor))
+		return want, newer(want, running)
+	}
+	want = ensureV(entry)
+	return want, want != "" && want != ensureV(running)
 }
 
 // replace makes o the pending offer, superseding the old one.
