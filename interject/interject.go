@@ -135,9 +135,10 @@ func New(agent Agent, cfg Config) *Interjector {
 
 // Instruction is the rule appended to every fork prompt.
 const Instruction = `[side question while your main task keeps running in another branch]
-Answer the message above briefly. Do NOT call any tools.
-Optionally, just before the last line, add one line "NOTE: <text>" — a note to your main task, sent with action 2.
-End with a final line of exactly two numbers separated by one space: ACTION CONF
+Answer the message above briefly. You may do quick, safe actions yourself (open a branch topic, post, react, a short read-only command). Leave file edits, builds and long work to the main task.
+In your answer, say what you did, and what the main task will do at its next step. Do not say "now" for work you leave to the main task.
+Optionally, just before the last line, add one line "NOTE: <text>" — a note to your main task, sent with action 2. If you did an action, say it in the NOTE so the main task does not repeat it.
+End with a final line of exactly two numbers separated by one space, for example "2 8": ACTION CONF
 ACTION: 1 = just answer, the main task never sees this; 2 = also tell the main task now (it keeps running); 3 = stop the main task.
 CONF: your confidence 0-9.`
 
@@ -252,7 +253,7 @@ func (r Reply) Tag() string { return fmt.Sprintf("*(quick reply · %s)*", r.Acti
 func Parse(out string) Reply {
 	out = strings.TrimSpace(out)
 	idx := strings.LastIndexByte(out, '\n')
-	f := strings.Fields(out[idx+1:])
+	f := strings.Fields(strings.Trim(out[idx+1:], "*` \t"))
 	if len(f) != 2 {
 		return Reply{Text: out, Action: None, Conf: -1}
 	}

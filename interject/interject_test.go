@@ -80,6 +80,8 @@ func TestParse(t *testing.T) {
 		{"hello\n4 8", Reply{Text: "hello\n4 8", Action: None, Conf: -1}},
 		{"hello", Reply{Text: "hello", Action: None, Conf: -1}},
 		{"3 9", Reply{Action: Abort, Conf: 9}},
+		{"hello\n**2 7**", Reply{Text: "hello", Action: Inform, Conf: 7}},
+		{"hello\n`1 9`", Reply{Text: "hello", Action: None, Conf: 9}},
 	}
 	for _, c := range cases {
 		if r := Parse(c.in); r != c.want {

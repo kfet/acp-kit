@@ -8,6 +8,16 @@ once it leaves v0.
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-11-20
+
+### Changed
+
+- interject: the fork may now do quick, safe actions itself (open a branch topic, post, react, a short read-only command) instead of "Do NOT call any tools", which nothing enforced. It must not say "now" for work it leaves to the main task, and it reports its own actions in the NOTE so the main task does not repeat them.
+
+### Fixed
+
+- interject: `Parse` accepts a verdict line wrapped in `**` or backticks.
+
 ## [0.52.1] - 2026-11-19
 
 ### Fixed
