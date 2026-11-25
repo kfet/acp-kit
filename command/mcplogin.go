@@ -192,5 +192,5 @@ func (e pendingEntry) cancelHint() string {
 
 // alreadyPending refuses a second concurrent login for a conversation.
 func alreadyPending(e pendingEntry) string {
-	return fmt.Sprintf("A login is already in progress (%s). Paste the redirect URL or send `%s`.", e.methodID, e.cancelHint())
+	return fmt.Sprintf("A login is already in progress (%s). Paste the code or redirect URL, or send `%s`.", e.methodID, e.cancelHint())
 }

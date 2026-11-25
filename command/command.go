@@ -606,7 +606,7 @@ func (b *Broker) OfferLogin() string {
 		fmt.Fprintf(&sb, "- `%slogin %s` — %s\n", DisplaySigil, shortID, m.Name)
 	}
 	sb.WriteString("\nThen open the URL I reply with, authenticate, and paste " +
-		"the page's URL back here to finish.")
+		"the code or redirect URL back here to finish.")
 	return sb.String()
 }
 
@@ -809,9 +809,11 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 		b.mu.Lock()
 		b.pending[convID] = pendingEntry{methodID: methodID, authID: res.ID}
 		b.mu.Unlock()
-		text := fmt.Sprintf("Open this URL to authenticate, then paste the URL of the page you land on (even if it fails to load):\n\n%s\n", res.URL)
+		var text string
 		if res.Instructions != "" {
-			text += "\n" + res.Instructions + "\n"
+			text = fmt.Sprintf("Open this URL to sign in:\n\n%s\n\n%s\n", res.URL, res.Instructions)
+		} else {
+			text = fmt.Sprintf("Open this URL to authenticate, then paste the URL of the page you land on (even if it fails to load):\n\n%s\n", res.URL)
 		}
 		return &Outcome{Text: text, URL: res.URL, Instructions: res.Instructions}, nil
 	case "ok", "":
@@ -826,7 +828,7 @@ func (b *Broker) start(ctx context.Context, convID, provider string) (*Outcome, 
 // complete submits the pasted redirect URL.
 func (b *Broker) complete(ctx context.Context, convID string, entry pendingEntry, redirect string) (*Outcome, error) {
 	if redirect == "" {
-		return &Outcome{Text: fmt.Sprintf("Empty paste — send the redirect URL or `%s`.", entry.cancelHint())}, nil
+		return &Outcome{Text: fmt.Sprintf("Empty paste — send the code or redirect URL, or `%s`.", entry.cancelHint())}, nil
 	}
 	res, err := b.authenticate(ctx, entry, redirect, false)
 	// Always drop the pending entry — a failed paste means the user must

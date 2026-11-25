@@ -70,6 +70,19 @@ func TestStart_NeedsRedirectWithInstructions(t *testing.T) {
 	if out.Instructions != "Do this" {
 		t.Fatalf("Instructions field = %q", out.Instructions)
 	}
+	if !strings.HasPrefix(out.Text, "Open this URL to sign in:") || strings.Contains(out.Text, "land on") {
+		t.Fatalf("want neutral lead without fallback text: %q", out.Text)
+	}
+}
+
+func TestStart_NeedsRedirectNoInstructionsFallback(t *testing.T) {
+	f := newFake()
+	f.res = client.AuthResult{State: "needs_redirect", URL: "https://x"}
+	b := New(f)
+	out, _ := b.Handle(context.Background(), "c1", "/login anthropic")
+	if !strings.Contains(out.Text, "paste the URL of the page you land on") || !strings.Contains(out.Text, "https://x") {
+		t.Fatalf("fallback wording missing: %q", out.Text)
+	}
 }
 
 func TestComplete_EmptyPaste(t *testing.T) {
@@ -82,7 +95,7 @@ func TestComplete_EmptyPaste(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Text, "Empty paste") {
+	if !strings.Contains(out.Text, "Empty paste") || !strings.Contains(out.Text, "the code or redirect URL") {
 		t.Fatalf("got %q", out.Text)
 	}
 	// Pending must remain (so user can paste again).

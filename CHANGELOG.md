@@ -8,6 +8,10 @@ once it leaves v0.
 
 ## [Unreleased]
 
+### Changed
+
+- command: when fir sends per-provider login instructions, the relay leads with a neutral "Open this URL to sign in:" plus those instructions; the "paste the URL of the page you land on" text is now only the fallback. Paste prompts say "the code or redirect URL".
+
 ## [0.52.2] - 2026-11-20
 
 ### Changed
